@@ -94,6 +94,7 @@ A new user can sign in with Google, analyze a meal, add it, edit its quantity an
 | 2026-10-10 | Auth UI: Custom Bitewise-styled Sign In / Sign Up card and SSO callback under /sign-in/[[...sign-in]] using Clerk custom-flow hooks (useSignIn, useSignUp, HandleSSOCallback) with Google OAuth |
 | 2026-10-11 | Analyze performance & resilience: Gemini calls use thinkingBudget: 0 and single-pass fallback macro estimation in parseMealText(); USDA lookup forces IPv4 with a 3.5s timeout and falls back to Gemini (is_estimated=true) on timeout/unreachable; ai_usage write and item resolution run in parallel via Promise.all with normalized_name deduplication |
 | 2026-10-11 | Repository, license & gitignore: Public GitHub repository (uhtharv/bitewise) licensed under GNU AGPLv3 (AGPL-3.0); all .env* files (including .env.example), .clerk/, supabase/.branches, and supabase/.temp are git-ignored |
+| 2026-10-11 | Versioning & releases: Semantic Versioning 2.0.0 starting at v1.0.0 tracked in package.json, CHANGELOG.md, and Git tags via npm version scripts (release:patch/minor/major) and automated GitHub Releases (.github/workflows/release.yml); no version displayed in UI |
 
 New entries are added only after the owner confirms them.
 

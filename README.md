@@ -98,11 +98,29 @@ Open [http://localhost:3000](http://localhost:3000) in your browser, sign in wit
 | `npm run lint` | Run ESLint across the repository |
 | `npm run typecheck` | Run TypeScript strict type checking (`tsc --noEmit`) |
 | `npm test` | Run the Vitest unit and integration test suite |
+| `npm run release:patch` | Bump `PATCH` version (`x.y.Z`), commit, and create Git tag `vX.Y.Z` |
+| `npm run release:minor` | Bump `MINOR` version (`x.Y.0`), commit, and create Git tag `vX.Y.Z` |
+| `npm run release:major` | Bump `MAJOR` version (`X.0.0`), commit, and create Git tag `vX.Y.Z` |
+
+---
+
+## Versioning & Releases
+
+Bitewise follows [Semantic Versioning 2.0.0](https://semver.org/) (`MAJOR.MINOR.PATCH`):
+
+1. Add your changes under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md), then move them under the new `[X.Y.Z] - YYYY-MM-DD` heading when cutting a release.
+2. Run one of the built-in release scripts (`npm run release:patch`, `npm run release:minor`, or `npm run release:major`), which updates `package.json`, `package-lock.json`, and creates a signed/annotated `vX.Y.Z` Git tag.
+3. Push the commit and tag to GitHub:
+   ```bash
+   git push --follow-tags
+   ```
+   Pushing a `v*.*.*` tag automatically triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to publish a GitHub Release with the matching section from [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
 ## Project Structure & Documentation
 
+- [`CHANGELOG.md`](CHANGELOG.md) — Version history following Keep a Changelog & SemVer
 - [`docs/PRD.md`](docs/PRD.md) — Product requirements, user flow, constraints, and decision log
 - [`docs/BACKEND_PRD.md`](docs/BACKEND_PRD.md) — Database schema, RLS policies, API contracts, and 3-stage nutrition pipeline
 - [`docs/FRONTEND_PRD.md`](docs/FRONTEND_PRD.md) — Route structure, screen specifications, and UI states

@@ -108,3 +108,9 @@ Open [http://localhost:3000](http://localhost:3000) in your browser, sign in wit
 - [`docs/FRONTEND_PRD.md`](docs/FRONTEND_PRD.md) — Route structure, screen specifications, and UI states
 - [`docs/DESIGN.md`](docs/DESIGN.md) — Visual identity, color tokens, and typography rules
 - [`supabase/migrations/0001_initial_schema.sql`](supabase/migrations/0001_initial_schema.sql) — PostgreSQL schema and RLS policies
+
+---
+
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** — see the [`LICENSE`](LICENSE) file for details.

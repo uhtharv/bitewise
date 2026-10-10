@@ -54,7 +54,7 @@ Status labels used in all docs:
 - Do not hardcode a Gemini model ID. Read it from `GEMINI_MODEL`. If it is unset, ask the owner for the value.
 - Do not state how a library API works from memory as fact. Check the installed version's types or official docs. If you cannot verify, say "unverified".
 - Do not use any paid service or anything that requires billing.
-- Never commit secrets. Keep `.env.local` git-ignored and maintain `.env.example` with names only.
+- Never commit secrets. Keep all `.env*` files (including `.env.local` and `.env.example`) git-ignored and maintain `.env.example` locally with names only.
 - Never expose `SUPABASE_SERVICE_ROLE_KEY`, `GEMINI_API_KEY` or `USDA_API_KEY` to client code (no `NEXT_PUBLIC_` prefix, never imported in client components).
 - Never disable Row Level Security. Every new user-data table needs RLS plus a test proving one user cannot access another's rows.
 - Never present AI-estimated values as exact. Anything with `is_estimated = true` must be visibly marked as an estimate in the UI.
@@ -91,7 +91,7 @@ Status labels used in all docs:
 A task is done only when all of these are true:
 - It meets the cited requirement IDs exactly, with nothing extra.
 - Lint, typecheck and tests pass, with output shown.
-- No secret is committed and `.env.example` is current.
+- No secret is committed and local `.env.example` is current.
 - Loading, empty and error states exist for anything user-facing.
 - The end-of-task report is written.
 

@@ -93,6 +93,7 @@ A new user can sign in with Google, analyze a meal, add it, edit its quantity an
 | 2026-10-10 | Settings (/settings) & testing: Timezone uses a Select of standard IANA timezones (pre-selected to browser timezone when unset); frontend unit tests run in Vitest Node + react-dom/server with zero extra test dependencies |
 | 2026-10-10 | Auth UI: Custom Bitewise-styled Sign In / Sign Up card and SSO callback under /sign-in/[[...sign-in]] using Clerk custom-flow hooks (useSignIn, useSignUp, HandleSSOCallback) with Google OAuth |
 | 2026-10-11 | Analyze performance & resilience: Gemini calls use thinkingBudget: 0 and single-pass fallback macro estimation in parseMealText(); USDA lookup forces IPv4 with a 3.5s timeout and falls back to Gemini (is_estimated=true) on timeout/unreachable; ai_usage write and item resolution run in parallel via Promise.all with normalized_name deduplication |
+| 2026-10-11 | Repository & gitignore: Public GitHub repository (uhtharv/bitewise); all .env* files (including .env.example), .clerk/, supabase/.branches, and supabase/.temp are git-ignored |
 
 New entries are added only after the owner confirms them.
 

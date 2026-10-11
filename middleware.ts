@@ -12,13 +12,28 @@ function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
+export function isClerkProxyPath(pathname: string): boolean {
+  return pathname === "/__clerk" || pathname.startsWith("/__clerk/");
+}
+
+export function shouldEnableFrontendApiProxy(url: URL): boolean {
+  if (isClerkProxyPath(url.pathname)) {
+    return true;
+  }
+  return url.hostname.endsWith(".vercel.app");
+}
+
 export async function handleMiddlewareAuth(
   auth: ClerkMiddlewareAuth,
   request: NextRequest
 ) {
   const { pathname } = request.nextUrl;
 
-  if (isPublicSignInPath(pathname) || isApiPath(pathname)) {
+  if (
+    isPublicSignInPath(pathname) ||
+    isApiPath(pathname) ||
+    isClerkProxyPath(pathname)
+  ) {
     return NextResponse.next();
   }
 
@@ -31,14 +46,20 @@ export async function handleMiddlewareAuth(
   return NextResponse.next();
 }
 
-export default clerkMiddleware((auth, request) =>
-  handleMiddlewareAuth(auth, request)
+export default clerkMiddleware(
+  (auth, request) => handleMiddlewareAuth(auth, request),
+  {
+    frontendApiProxy: {
+      enabled: shouldEnableFrontendApiProxy,
+    },
+  }
 );
 
 export const config = {
   matcher: [
     "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
-    "/(api|trpc)(.*)",
+    "/(api|trpc|__clerk)(.*)",
   ],
 };
+
 

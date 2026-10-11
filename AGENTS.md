@@ -93,7 +93,9 @@ A task is done only when all of these are true:
 - Lint, typecheck and tests pass, with output shown.
 - No secret is committed and local `.env.example` is current.
 - Loading, empty and error states exist for anything user-facing.
+- When shipping a code fix or feature to `main`, `CHANGELOG.md` is updated and the SemVer version is bumped and tagged (`npm run release:patch`, `release:minor`, or `release:major`) and pushed with `--follow-tags`.
 - The end-of-task report is written.
+
 
 ## 8. Agent skills
 

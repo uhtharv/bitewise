@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-11
+
+### Fixed
+- **Clerk Production Script Loading (`FR-1`):** Disabled Clerk's build-time `.vercel.app` auto-proxy override (`CLERK_DISABLE_AUTO_PROXY="true"` in `next.config.ts` and `app/layout.tsx`) so production loads Clerk bundles directly from `https://clerk.bite-wise.app`, and updated `middleware.ts` (`config.matcher`, `shouldEnableFrontendApiProxy`, `isClerkProxyPath`) to match and proxy `/__clerk` requests instead of returning `404 Not Found`.
+- **GitHub Release Workflow:** Replaced regex matching with literal `index($0, "## [" ver "]") == 1` in `.github/workflows/release.yml` when extracting versioned release notes from `CHANGELOG.md`.
+
 ## [1.0.0] - 2026-10-11
+
 
 ### Added
 - **Google Authentication (`FR-1`):** Custom Bitewise-styled Sign In / Sign Up card and SSO callback under `/sign-in/[[...sign-in]]` powered by Clerk Google OAuth.

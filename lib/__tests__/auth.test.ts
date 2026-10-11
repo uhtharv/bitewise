@@ -85,5 +85,59 @@ describe("03 — Clerk Google Authentication, Route Protection & /sign-in", () =
     expect(mockRedirectToSignIn).not.toHaveBeenCalled();
     expect(signInRes?.status).toBe(200);
   });
+
+  it("matches /__clerk/*.js assets in middleware config.matcher, allows /__clerk in handleMiddlewareAuth, and enables frontendApiProxy for /__clerk paths on custom domains", async () => {
+    const {
+      config,
+      handleMiddlewareAuth,
+      shouldEnableFrontendApiProxy,
+    } = await import("@/middleware");
+
+    const clerkJsPath = "/__clerk/npm/@clerk/clerk-js@6/dist/clerk.browser.js";
+    const clerkUiPath = "/__clerk/npm/@clerk/ui@1/dist/ui.browser.js";
+
+    const matchesClerkProxyRange = config.matcher.some((pattern) =>
+      pattern.includes("__clerk")
+    );
+    expect(matchesClerkProxyRange).toBe(true);
+
+    expect(
+      shouldEnableFrontendApiProxy(
+        new URL(`https://bite-wise.app${clerkJsPath}`)
+      )
+    ).toBe(true);
+    expect(
+      shouldEnableFrontendApiProxy(
+        new URL(`https://bite-wise.app${clerkUiPath}`)
+      )
+    ).toBe(true);
+    expect(
+      shouldEnableFrontendApiProxy(new URL("https://bite-wise.app/sign-in"))
+    ).toBe(false);
+
+    const mockRedirectToSignIn = vi.fn();
+    const unauthMiddlewareAuth = Object.assign(
+      async () => ({
+        userId: null,
+        redirectToSignIn: mockRedirectToSignIn,
+      }),
+      { protect: vi.fn() }
+    );
+
+    const clerkProxyReq = new NextRequest(
+      `https://bite-wise.app${clerkJsPath}`
+    );
+    const clerkProxyRes = await handleMiddlewareAuth(
+      // Intentional partial mock of ClerkMiddlewareAuth for unit testing route protection
+      unauthMiddlewareAuth as unknown as Parameters<
+        typeof handleMiddlewareAuth
+      >[0],
+      clerkProxyReq
+    );
+
+    expect(mockRedirectToSignIn).not.toHaveBeenCalled();
+    expect(clerkProxyRes?.status).toBe(200);
+  });
 });
+
 

@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
+  env: {
+    CLERK_DISABLE_AUTO_PROXY: "true",
+  },
   experimental: {
     agentFeedback: true,
   },
@@ -18,3 +21,4 @@ const nextConfig: NextConfig = {
 };
 
 export default nextConfig;
+

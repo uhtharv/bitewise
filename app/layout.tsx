@@ -17,6 +17,8 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
+  process.env.CLERK_DISABLE_AUTO_PROXY ??= "true";
+
   return (
     <ClerkProvider>
       <html lang="en" className={`${inter.variable} h-full antialiased`}>
@@ -30,3 +32,4 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     </ClerkProvider>
   );
 }
+

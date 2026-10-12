@@ -8,10 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "release:patch": "npm version patch -m \"chore(release): v%s\"",
-    "release:minor": "npm version minor -m \"chore(release): v%s\"",
-    "release:major": "npm version major -m \"chore(release): v%s\""
+    "test": "vitest run"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

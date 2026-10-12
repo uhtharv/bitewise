@@ -53,14 +53,14 @@ Saved and favorite meals, per-day range summaries, CSV export, barcode lookup, p
 
 ## 8. Data and AI rules **[LOCKED]**
 
-- Order of truth for macros: cached food (`foods` table), then USDA FoodData Central, then a Gemini estimate marked as estimated (`is_estimated = true`). Open Food Facts is not used in v1.
-- Every resolved food (including AI estimates, preserving `is_estimated = true`) is cached in `foods` so each food is looked up once. No custom CSV seed is required for v1.
-- Gemini is used to parse text into items (normalizing household units into grams `quantity_g`) and to estimate macros when no USDA data exists. It must not be the default source of numbers when real data exists.
+- Order of truth for macros: cached food (`foods` table), then Gemini single-pass nutrition resolution (`source = 'gemini'`). Live USDA FoodData Central lookups and Open Food Facts are not used in v1.
+- Every resolved food (and any preparation variant such as `dry`/`raw` vs. `cooked`) is cached in `foods` by its state-specific `normalized_name` so each food variant is looked up once. `is_estimated` is `false` for standard single-ingredient staples and `true` for prepared/composite dishes whose recipes vary.
+- Gemini parses meal text into items, resolves quantities in grams (`quantity_g`), and provides per-100g macros validated against physical bounds (`P + C + F <= 105g`, `calories <= 900 kcal`) and Atwater energy (`4P + 4C + 9F`). When a food's preparation state (`dry`/`raw` vs. `cooked`) is unspecified by the user, both variants are resolved and returned so the user can toggle between them on Home before saving.
 - Full pipeline: `docs/BACKEND_PRD.md`, section 7.
 
 ## 9. Constraints
 
-- Free tiers only: Vercel Hobby, Supabase, Clerk, Gemini API free tier, and USDA FoodData Central. **[LOCKED]**
+- Free tiers only: Vercel Hobby, Supabase, Clerk, and Gemini API free tier. **[LOCKED]**
 - Gemini free-tier limits and terms change often. Before relying on any number, check Google's current rate-limits page. Free-tier inputs may be used by Google to improve its products, so users should be told meal text is sent to a third-party AI. **[PROPOSED]**
 
 ## 10. Success criteria **[PROPOSED]**
@@ -94,7 +94,9 @@ A new user can sign in with Google, analyze a meal, add it, edit its quantity an
 | 2026-10-10 | Auth UI: Custom Bitewise-styled Sign In / Sign Up card and SSO callback under /sign-in/[[...sign-in]] using Clerk custom-flow hooks (useSignIn, useSignUp, HandleSSOCallback) with Google OAuth |
 | 2026-10-11 | Analyze performance & resilience: Gemini calls use thinkingBudget: 0 and single-pass fallback macro estimation in parseMealText(); USDA lookup forces IPv4 with a 3.5s timeout and falls back to Gemini (is_estimated=true) on timeout/unreachable; ai_usage write and item resolution run in parallel via Promise.all with normalized_name deduplication |
 | 2026-10-11 | Repository, license & gitignore: Public GitHub repository (uhtharv/bitewise) licensed under GNU AGPLv3 (AGPL-3.0); all .env* files (including .env.example), .clerk/, supabase/.branches, and supabase/.temp are git-ignored |
-| 2026-10-11 | Versioning & releases: Semantic Versioning 2.0.0 starting at v1.0.0 tracked in package.json, CHANGELOG.md, and Git tags via npm version scripts (release:patch/minor/major) and automated GitHub Releases (.github/workflows/release.yml); no version displayed in UI |
+| 2026-10-11 | Versioning & releases: Semantic Versioning 2.0.0 starting at v1.0.0, automated via Conventional Commits and `googleapis/release-please-action@v4` (`.github/workflows/release.yml`, `release-please-config.json`, `.release-please-manifest.json`) to maintain `CHANGELOG.md`, `package.json`, Git tags, and GitHub Releases; no version displayed in UI |
+| 2026-10-12 | Analyze calculation & pipeline v2: Drop live USDA API lookups in favor of single-pass Gemini + `foods` cache; Gemini sets `is_estimated=false` for standard single-ingredient staples and `is_estimated=true` for prepared/composite dishes; require state-specific `normalized_name` and return both Dry/Raw and Cooked variants (with variant-specific default `quantity_g` and inline `Button` pill switcher on Home) when state is unspecified; enforce server unit multipliers only for exact weight/spoon units (`g`, `gm`, `gms`, `kg`, `oz`, `lb`, `ml`, `tbsp`, `tsp`) and trust Gemini `quantity_g` first for food-dependent units; validate `P+C+F <= 105g` and auto-correct `calories_per_100g` to Atwater `4P+4C+9F` when drift exceeds 20% and 30 kcal; rescale `PATCH /api/entries/:id` from linked `foods` row per-100g macros (1-decimal rounding) and clear legacy/poisoned rows from `foods` cache |
+| 2026-10-13 | Gemini Flash-Lite multi-model fallback & resilience: `GEMINI_MODEL` supports comma-separated model IDs (`gemini-3.5-flash-lite,gemini-3.1-flash-lite-preview,gemini-3.1-flash-lite`) for higher free-tier RPD; `GeminiProvider` retries transient `503`/`5xx`/network errors with exponential backoff, strips `thinkingConfig` when a lite model returns `400 INVALID_ARGUMENT`, falls back across configured models on `429`/`503`, upserts `foods` on `normalized_name`, and increments `ai_usage` only after `parseMealText()` succeeds |
 
 New entries are added only after the owner confirms them.
 

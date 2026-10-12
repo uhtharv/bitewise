@@ -124,11 +124,11 @@ All endpoints validate inputs with `zod` and return JSON.
 | `502` | `UPSTREAM_ERROR` | Gemini, USDA, or Supabase upstream request failed |
 
 ### 6.1 `POST /api/analyze`
-Parses free-text meal description, resolves nutrition via cache -> USDA -> Gemini fallback, and returns analyzed items without saving any meal entry (`FR-2`, `FR-7`).
+Parses free-text meal description, resolves nutrition via `foods` cache -> Gemini single-pass macros, and returns analyzed items (including optional `dry`/`raw` vs. `cooked` variants when preparation state was unspecified) without saving any meal entry (`FR-2`, `FR-7`).
 
 - **Request Body:**
   ```json
-  { "text": "2 katori dal tadka and 2 rotis" }
+  { "text": "300 gms oats and 2 katori dal tadka" }
   ```
   (`text`: non-empty trimmed string, max 500 chars)
 - **Response `200 OK`:**
@@ -136,23 +136,58 @@ Parses free-text meal description, resolves nutrition via cache -> USDA -> Gemin
   {
     "items": [
       {
-        "food_id": "uuid",
-        "food_name": "Dal Tadka",
+        "food_id": "uuid-dry",
+        "food_name": "Oats (Dry)",
         "quantity_g": 300,
-        "calories": 330,
-        "protein_g": 16.5,
-        "carbs_g": 42,
-        "fat_g": 10.5,
-        "calories_per_100g": 110,
-        "protein_per_100g": 5.5,
-        "carbs_per_100g": 14,
-        "fat_per_100g": 3.5,
-        "is_estimated": true
+        "calories": 1137,
+        "protein_g": 39.6,
+        "carbs_g": 203.1,
+        "fat_g": 19.5,
+        "calories_per_100g": 379,
+        "protein_per_100g": 13.2,
+        "carbs_per_100g": 67.7,
+        "fat_per_100g": 6.5,
+        "is_estimated": false,
+        "selected_state": "dry",
+        "variants": [
+          {
+            "state": "dry",
+            "label": "Dry",
+            "food_id": "uuid-dry",
+            "food_name": "Oats (Dry)",
+            "quantity_g": 300,
+            "calories": 1137,
+            "protein_g": 39.6,
+            "carbs_g": 203.1,
+            "fat_g": 19.5,
+            "calories_per_100g": 379,
+            "protein_per_100g": 13.2,
+            "carbs_per_100g": 67.7,
+            "fat_per_100g": 6.5,
+            "is_estimated": false
+          },
+          {
+            "state": "cooked",
+            "label": "Cooked",
+            "food_id": "uuid-cooked",
+            "food_name": "Oats (Cooked)",
+            "quantity_g": 300,
+            "calories": 213,
+            "protein_g": 7.5,
+            "carbs_g": 36,
+            "fat_g": 4.2,
+            "calories_per_100g": 71,
+            "protein_per_100g": 2.5,
+            "carbs_per_100g": 12,
+            "fat_per_100g": 1.4,
+            "is_estimated": false
+          }
+        ]
       }
     ]
   }
   ```
-  *(Per-100g fields allow the Home screen to proportionally rescale macros on the client when the user edits `quantity_g` before saving.)*
+  *(Per-100g fields and optional `variants` allow the Home screen to switch between `Dry`/`Raw` and `Cooked` states and proportionally rescale macros on the client when the user edits `quantity_g` before saving.)*
 
 ### 6.2 `POST /api/entries`
 Saves one or more analyzed food items to the user's daily meal log (`FR-3`).
@@ -182,7 +217,7 @@ Saves one or more analyzed food items to the user's daily meal log (`FR-3`).
   ```
 
 ### 6.3 `PATCH /api/entries/:id`
-Updates a saved entry's `quantity_g` and proportionally rescales `calories`, `protein_g`, `carbs_g`, and `fat_g` (`FR-5`).
+Updates a saved entry's `quantity_g` and proportionally rescales `calories`, `protein_g`, `carbs_g`, and `fat_g` (`FR-5`). When `existing.food_id` is non-null and the referenced `foods` row exists, rescales directly from the `foods` row's `*_per_100g` columns with 1-decimal rounding (`Math.round(((per100g * newQuantityG) / 100) * 10) / 10`) to prevent small-quantity zero-locking and compound rounding drift; falls back to `oldMacro / oldQuantityG` only when `food_id` is null or missing.
 
 - **Request Body:**
   ```json
@@ -256,10 +291,26 @@ Reads or upserts the authenticated user's daily calorie/macro goals and timezone
 
 The AI provider lives behind `lib/ai/provider.ts`:
 ```ts
+export type PreparationState = "dry" | "raw" | "cooked";
+
+export interface ParsedMealVariant {
+  state: PreparationState;
+  label: string;
+  normalized_name: string;
+  display_name: string;
+  quantity_g: number;
+  macros_per_100g: MacroPer100g;
+}
+
 export interface ParsedMealItem {
   normalized_name: string;
   display_name: string;
   quantity_g: number;
+  quantity?: number;
+  unit?: string;
+  estimated_macros_per_100g?: MacroPer100g;
+  selected_state?: PreparationState;
+  variants?: ParsedMealVariant[];
 }
 
 export interface MacroPer100g {
@@ -267,6 +318,7 @@ export interface MacroPer100g {
   protein_per_100g: number;
   carbs_per_100g: number;
   fat_per_100g: number;
+  is_estimated?: boolean;
 }
 
 export interface AIProvider {
@@ -279,23 +331,28 @@ export interface AIProvider {
 1. **Rate Limit Check (`ai_usage`):**
    - Check `ai_usage` for `(userId, current_utc_date)`.
    - If `count >= 30` before increment, reject with `429 RATE_LIMITED`.
-   - Run the `ai_usage` increment write concurrently (`Promise.all`) with Step 1 (`parseMealText`).
-2. **Step 1 — Parse Meal Text (`AIProvider.parseMealText`):**
-   - Call Gemini (`process.env.GEMINI_MODEL`) with `thinkingConfig: { thinkingBudget: 0 }` and structured JSON output (`zod` validated), including inline fallback `estimated_macros_per_100g` per item.
+2. **Step 1 — Parse Meal Text & Single-Pass Macros (`AIProvider.parseMealText`):**
+   - Call Gemini (`process.env.GEMINI_MODEL`, which accepts a single model ID or comma-separated fallback model IDs such as `gemini-3.5-flash-lite,gemini-3.1-flash-lite-preview,gemini-3.1-flash-lite`) with `thinkingConfig: { thinkingBudget: 0 }` (automatically stripped if a lite model returns `400 INVALID_ARGUMENT`), bounded exponential-backoff retry on transient `503`/`5xx`/network errors, sequential model fallback on `429`/`503`, and structured JSON output (`zod` validated).
    - Accepts English, regional/Indian dish names, and Hinglish.
-   - Normalizes all quantities to grams (`quantity_g`) using a standard reference table in the prompt (e.g., `1 medium katori = 150g`, `1 cup cooked = 200g`, `1 roti/chapati = 35g`, `1 slice bread = 30g`, `1 large egg = 50g`, `1 tbsp = 15g`, `1 tsp = 5g`).
-   - If Gemini returns an empty item list or unparseable output, return `422 UNPROCESSABLE_ENTITY`.
-3. **Step 2 — Cache Lookup (`foods` table, parallelized via `Promise.all` with `normalized_name` deduplication):**
-   - Query `foods` by `normalized_name` (lowercase, trimmed).
+   - **Unit normalization (`normalizeHouseholdUnitToGrams`):**
+     - Deterministic server multipliers apply **only** to exact weight/spoon units (`g`, `gm`, `gms`, `gram`, `grams`, `kg`, `kilogram`, `kilograms`, `oz`, `ounce`, `ounces`, `lb`, `pound`, `pounds`, `ml`, `tbsp`, `tablespoon`, `tablespoons`, `tsp`, `teaspoon`, `teaspoons`).
+     - For food-dependent household units (`cup`, `katori`, `bowl`, `roti`, `chapati`, `paratha`, `slice`, `egg`, `idli`, `dosa`, `piece`, `scoop`), trust Gemini's context-aware `quantity_g` first and use reference weights only as a fallback when `quantity_g` is omitted.
+   - **State-specific `normalized_name` & Ambiguous State Variants:**
+     - `normalized_name` must always include the preparation state (`"oats, dry"` vs `"oats, cooked"`, `"white rice, cooked"` vs `"white rice, raw"`).
+     - When a food can be logged as either `dry`/`raw` or `cooked` and the user did not explicitly specify the state in the text, Gemini returns both `variants` (each with its own state-specific `normalized_name`, `display_name`, default `quantity_g`, and `macros_per_100g`), setting `selected_state` to `"dry"` for gram-weighed dry pantry staples like oats (`"300 gms oats"`) and `"cooked"` for meal items/volume units (`"200g rice"`, `"1 cup oats"`).
+   - **`is_estimated` Classification:**
+     - Gemini sets `is_estimated = false` for standard single-ingredient staples with well-defined reference macros (e.g., oats, eggs, plain rice, chicken breast, milk, banana) and `is_estimated = true` for prepared/composite dishes and recipes (e.g., dal tadka, paneer butter masala, biryani).
+   - **Physical & Atwater Math Validation:**
+     - Reject any per-100g macro set where `protein_per_100g + carbs_per_100g + fat_per_100g > 105`, any single macro `> 100`, or `calories_per_100g > 900`.
+     - Compute Atwater calories `atwater = 4 * protein_per_100g + 4 * carbs_per_100g + 9 * fat_per_100g`. If `calories_per_100g` drifts from `atwater` by more than `20%` and `> 30 kcal`, auto-correct `calories_per_100g = round(atwater, 1)`.
+   - If Gemini returns an empty item list or unparseable/invalid output, return `422 UNPROCESSABLE_ENTITY` (without incrementing `ai_usage`).
+3. **Step 2 — Quota Increment & Cache Lookup/Persistence (`ai_usage` + `foods` table, parallelized via `Promise.all` with `normalized_name` deduplication):**
+   - Once `parseMealText` succeeds, run the `ai_usage` increment write concurrently (`Promise.all`) with resolving all parsed items.
+   - For each item (and each of its `variants`, if present), query `foods` by `normalized_name` (lowercase, trimmed).
    - On cache hit, use the cached per-100g macros and cached `is_estimated` flag.
-4. **Step 3 — External Nutrition Lookup (USDA FoodData Central):**
-   - On cache miss, query USDA FoodData Central (`GET https://api.nal.usda.gov/fdc/v1/foods/search`, IPv4-first with `autoSelectFamily: false` and a `3.5s` timeout) with `USDA_API_KEY`, preferring `Foundation` and `SR Legacy` data types.
-   - Extract per-100g energy (kcal, nutrient `1008` / `2047` / `2048`), protein (`1003`), carbohydrate (`1005`), and total lipid/fat (`1004`).
-   - If a valid match with all 4 macro values is found, insert into `foods` with `source = 'usda'` and `is_estimated = false`.
-5. **Step 4 — AI Fallback Estimation (`estimated_macros_per_100g` / `AIProvider.estimateMacrosPer100g`):**
-   - If USDA has no match, times out, or is unreachable, use the inline fallback `estimated_macros_per_100g` from `parseMealText` (or call `estimateMacrosPer100g` if absent).
-   - Insert into `foods` with `source = 'gemini'` and `is_estimated = true`.
-6. **Step 5 — Scale to `quantity_g`:**
-   - Compute item macros as `round((macro_per_100g * quantity_g) / 100, 1)` and return the response without writing to `meal_entries`.
+   - On cache miss, upsert (`onConflict: "normalized_name"`) the validated Gemini macros into `foods` with `source = 'gemini'` and the item's `is_estimated` boolean (no live USDA API call).
+4. **Step 3 — Scale to `quantity_g`:**
+   - Compute item and variant macros as `round((macro_per_100g * quantity_g) / 100, 1)` and return the response without writing to `meal_entries`.
+
 
 

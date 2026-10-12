@@ -93,7 +93,7 @@ A task is done only when all of these are true:
 - Lint, typecheck and tests pass, with output shown.
 - No secret is committed and local `.env.example` is current.
 - Loading, empty and error states exist for anything user-facing.
-- When shipping a code fix or feature to `main`, `CHANGELOG.md` is updated and the SemVer version is bumped and tagged (`npm run release:patch`, `release:minor`, or `release:major`) and pushed with `--follow-tags`.
+- When shipping a code fix or feature to `main`, commits use Conventional Commits (`feat:`, `fix:`) so `release-please` automatically maintains `CHANGELOG.md`, bumps `package.json`, tags `vX.Y.Z`, and publishes the GitHub Release when the Release PR is merged.
 - The end-of-task report is written.
 
 

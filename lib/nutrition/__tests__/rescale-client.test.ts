@@ -5,6 +5,7 @@ import {
   hasInvalidEditableQuantities,
   removeEditableItem,
   rescaleAnalyzedItem,
+  selectEditableItemVariant,
   toEditableAnalyzedItems,
   updateEditableItemQuantity,
 } from "@/lib/nutrition/rescale-client";
@@ -40,6 +41,56 @@ const SAMPLE_ITEMS: ResolvedMealItem[] = [
     is_estimated: false,
   },
 ];
+
+const VARIANT_CUP_OATS_ITEM: ResolvedMealItem = {
+  food_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+  food_name: "Oats (Cooked)",
+  quantity_g: 200,
+  calories: 142,
+  protein_g: 5,
+  carbs_g: 24,
+  fat_g: 2.8,
+  calories_per_100g: 71,
+  protein_per_100g: 2.5,
+  carbs_per_100g: 12,
+  fat_per_100g: 1.4,
+  is_estimated: false,
+  selected_state: "cooked",
+  variants: [
+    {
+      state: "dry",
+      label: "Dry",
+      food_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      food_name: "Oats (Dry)",
+      quantity_g: 85,
+      calories: 322.2,
+      protein_g: 11.2,
+      carbs_g: 57.5,
+      fat_g: 5.5,
+      calories_per_100g: 379,
+      protein_per_100g: 13.2,
+      carbs_per_100g: 67.7,
+      fat_per_100g: 6.5,
+      is_estimated: false,
+    },
+    {
+      state: "cooked",
+      label: "Cooked",
+      food_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      food_name: "Oats (Cooked)",
+      quantity_g: 200,
+      calories: 142,
+      protein_g: 5,
+      carbs_g: 24,
+      fat_g: 2.8,
+      calories_per_100g: 71,
+      protein_per_100g: 2.5,
+      carbs_per_100g: 12,
+      fat_per_100g: 1.4,
+      is_estimated: false,
+    },
+  ],
+};
 
 describe("lib/nutrition/rescale-client", () => {
   it("rescales calories, protein_g, carbs_g, and fat_g proportionally from per-100g values", () => {
@@ -106,5 +157,54 @@ describe("lib/nutrition/rescale-client", () => {
       ],
     });
   });
-});
 
+  it("switches between Dry and Cooked variants using variant default quantity_g before manual edit, and preserves custom quantity_g after manual edit", () => {
+    let editable = toEditableAnalyzedItems([VARIANT_CUP_OATS_ITEM]);
+    const clientId = editable[0].clientId;
+
+    // 1. Before manual edit: switching "1 cup oats" from Cooked (200g) to Dry switches quantity_g to 85g
+    editable = selectEditableItemVariant(editable, clientId, "dry");
+    expect(editable[0].selected_state).toBe("dry");
+    expect(editable[0].food_id).toBe("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    expect(editable[0].food_name).toBe("Oats (Dry)");
+    expect(editable[0].quantity_g).toBe(85);
+    expect(editable[0].rawQuantityInput).toBe("85");
+    expect(editable[0].calories).toBe(322.2);
+
+    // 2. User manually types "300" into Grams input while on Dry (300g -> 1137 kcal)
+    editable = updateEditableItemQuantity(editable, clientId, "300");
+    expect(editable[0].quantity_g).toBe(300);
+    expect(editable[0].calories).toBe(1137);
+
+    // 3. After manual edit: switching from Dry to Cooked preserves custom 300g and rescales to Cooked macros (213 kcal)
+    editable = selectEditableItemVariant(editable, clientId, "cooked");
+    expect(editable[0].selected_state).toBe("cooked");
+    expect(editable[0].food_id).toBe("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    expect(editable[0].food_name).toBe("Oats (Cooked)");
+    expect(editable[0].quantity_g).toBe(300);
+    expect(editable[0].rawQuantityInput).toBe("300");
+    expect(editable[0].calories).toBe(213);
+    expect(editable[0].protein_g).toBe(7.5);
+    expect(editable[0].carbs_g).toBe(36);
+    expect(editable[0].fat_g).toBe(4.2);
+
+    // 4. Payload sends the selected variant's fields
+    const payload = buildCreateEntriesPayload(editable, "2026-10-12", "dinner");
+    expect(payload).toEqual({
+      logged_on: "2026-10-12",
+      meal_type: "dinner",
+      items: [
+        {
+          food_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          food_name: "Oats (Cooked)",
+          quantity_g: 300,
+          calories: 213,
+          protein_g: 7.5,
+          carbs_g: 36,
+          fat_g: 4.2,
+          is_estimated: false,
+        },
+      ],
+    });
+  });
+});

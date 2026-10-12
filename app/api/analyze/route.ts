@@ -9,6 +9,7 @@ import {
 import { requireAuth } from "@/lib/auth";
 import {
   resolveFoodItem,
+  tryResolveMealTextFromCache,
   type ResolvedMealItem,
 } from "@/lib/nutrition/resolve-food";
 import { type UsdaFoodMatch } from "@/lib/nutrition/usda";
@@ -96,6 +97,15 @@ export async function handleAnalyzePost(
     );
   }
 
+  // Step 1.5: Cache-first resolution against shared `foods` table (0 Gemini calls when all items hit cache)
+  const cachedItems = await tryResolveMealTextFromCache(
+    parsedInput.data.text,
+    supabase
+  );
+  if (cachedItems && cachedItems.length > 0) {
+    return NextResponse.json({ items: cachedItems }, { status: 200 });
+  }
+
   let aiProvider: AIProvider;
   try {
     aiProvider = deps?.aiProvider ?? new GeminiProvider();
@@ -107,43 +117,12 @@ export async function handleAnalyzePost(
     );
   }
 
-  // Step 1b + Step 2: Run the `ai_usage` increment write concurrently with `parseMealText`
-  const usageWritePromise = existingRow
-    ? supabase
-        .from("ai_usage")
-        .update({ count: currentCount + 1 })
-        .eq("user_id", userId)
-        .eq("usage_date", usageDate)
-    : supabase.from("ai_usage").insert({
-        user_id: userId,
-        usage_date: usageDate,
-        count: 1,
-      });
-
-  const parseMealOutcomePromise = aiProvider
-    .parseMealText(parsedInput.data.text)
-    .then(
-      (items) => ({ ok: true as const, items }),
-      (error: unknown) => ({ ok: false as const, error })
-    );
-
-  const [usageWriteResult, parseMealOutcome] = await Promise.all([
-    usageWritePromise,
-    parseMealOutcomePromise,
-  ]);
-
-  if (usageWriteResult.error) {
-    return errorResponse(
-      502,
-      "UPSTREAM_ERROR",
-      existingRow
-        ? "Failed to update daily AI usage counter"
-        : "Failed to record daily AI usage counter"
-    );
-  }
-
-  if (!parseMealOutcome.ok) {
-    if (parseMealOutcome.error instanceof UnparseableMealError) {
+  // Step 2: Parse meal text via Gemini before burning the user's daily `ai_usage` quota
+  let parsedItems: Awaited<ReturnType<AIProvider["parseMealText"]>>;
+  try {
+    parsedItems = await aiProvider.parseMealText(parsedInput.data.text);
+  } catch (error) {
+    if (error instanceof UnparseableMealError) {
       return errorResponse(
         422,
         "UNPROCESSABLE_ENTITY",
@@ -157,8 +136,6 @@ export async function handleAnalyzePost(
     );
   }
 
-  const parsedItems = parseMealOutcome.items;
-
   if (!parsedItems || parsedItems.length === 0) {
     return errorResponse(
       422,
@@ -167,30 +144,61 @@ export async function handleAnalyzePost(
     );
   }
 
-  // Steps 3–5: Resolve all items in parallel via `foods` cache -> USDA -> Gemini fallback
-  // with in-flight deduplication by `normalized_name`
+  // Step 3: Increment `ai_usage` concurrently with resolving items via `foods` cache / Gemini macros
+  const usageWritePromise = existingRow
+    ? supabase
+        .from("ai_usage")
+        .update({ count: currentCount + 1 })
+        .eq("user_id", userId)
+        .eq("usage_date", usageDate)
+    : supabase.from("ai_usage").insert({
+        user_id: userId,
+        usage_date: usageDate,
+        count: 1,
+      });
+
   const inFlightFoods = new Map<
     string,
     Promise<{ food: FoodRow; fromCache: boolean }>
   >();
 
   let resolvedItems: ResolvedMealItem[];
+  let usageWriteResult: Awaited<typeof usageWritePromise>;
   try {
-    resolvedItems = await Promise.all(
-      parsedItems.map((item) =>
-        resolveFoodItem(item, {
-          supabase,
-          aiProvider,
-          lookupUsdaFood: deps?.lookupUsdaFood,
-          inFlightFoods,
-        })
-      )
-    );
-  } catch {
+    [usageWriteResult, resolvedItems] = await Promise.all([
+      usageWritePromise,
+      Promise.all(
+        parsedItems.map((item) =>
+          resolveFoodItem(item, {
+            supabase,
+            aiProvider,
+            inFlightFoods,
+          })
+        )
+      ),
+    ]);
+  } catch (error) {
+    if (error instanceof UnparseableMealError) {
+      return errorResponse(
+        422,
+        "UNPROCESSABLE_ENTITY",
+        "Could not parse the input text into food items"
+      );
+    }
     return errorResponse(
       502,
       "UPSTREAM_ERROR",
       "Upstream nutrition lookup failed"
+    );
+  }
+
+  if (usageWriteResult.error) {
+    return errorResponse(
+      502,
+      "UPSTREAM_ERROR",
+      existingRow
+        ? "Failed to update daily AI usage counter"
+        : "Failed to record daily AI usage counter"
     );
   }
 

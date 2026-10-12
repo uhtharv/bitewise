@@ -111,12 +111,22 @@ function createMockAnalyzeSupabase(options?: {
     if (url.pathname.endsWith("/rest/v1/foods")) {
       if (method === "GET") {
         const eqNormalized = url.searchParams.get("normalized_name");
-        const target = eqNormalized?.startsWith("eq.")
-          ? eqNormalized.slice(3)
-          : null;
-        const matched = target
-          ? foodRows.filter((f) => f.normalized_name === target)
-          : foodRows;
+        let matched = foodRows;
+        if (eqNormalized?.startsWith("eq.")) {
+          const target = eqNormalized.slice(3);
+          matched = foodRows.filter((f) => f.normalized_name === target);
+        } else if (
+          eqNormalized?.startsWith("in.(") &&
+          eqNormalized.endsWith(")")
+        ) {
+          const inner = eqNormalized.slice(4, -1);
+          const targets = new Set<string>();
+          for (const match of inner.matchAll(/"([^"]*)"|([^,]+)/g)) {
+            const val = (match[1] ?? match[2] ?? "").trim();
+            if (val) targets.add(val);
+          }
+          matched = foodRows.filter((f) => targets.has(f.normalized_name));
+        }
         return new Response(JSON.stringify(matched), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -126,8 +136,15 @@ function createMockAnalyzeSupabase(options?: {
       if (method === "POST") {
         const bodyText = typeof init?.body === "string" ? init.body : "{}";
         const payload = JSON.parse(bodyText) as Partial<FoodRow>;
+        const existingIdx = foodRows.findIndex(
+          (f) => f.normalized_name === (payload.normalized_name ?? "")
+        );
         const newRow: FoodRow = {
-          id: payload.id ?? "f00d0000-0000-4000-8000-000000000123",
+          id:
+            payload.id ??
+            (existingIdx >= 0
+              ? foodRows[existingIdx].id
+              : "f00d0000-0000-4000-8000-000000000123"),
           normalized_name: payload.normalized_name ?? "",
           display_name: payload.display_name ?? "",
           calories_per_100g: Number(payload.calories_per_100g ?? 0),
@@ -139,7 +156,11 @@ function createMockAnalyzeSupabase(options?: {
           is_estimated: Boolean(payload.is_estimated),
           created_at: "2026-10-10T10:00:00Z",
         };
-        foodRows.push(newRow);
+        if (existingIdx >= 0) {
+          foodRows[existingIdx] = newRow;
+        } else {
+          foodRows.push(newRow);
+        }
         return new Response(JSON.stringify([newRow]), {
           status: 201,
           headers: { "Content-Type": "application/json" },
@@ -379,9 +400,10 @@ describe("05 — POST /api/analyze & Daily Rate Limiter", () => {
     expect(res.status).toBe(502);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("UPSTREAM_ERROR");
+    expect(dbHarness.usageRows).toEqual([]);
   });
 
-  it("resolves parsed items in parallel and deduplicates in-flight lookups for the same normalized_name", async () => {
+  it("resolves parsed items in parallel without calling USDA and deduplicates in-flight lookups for the same normalized_name", async () => {
     mockRequireAuth.mockResolvedValueOnce("user_123");
     const { createServiceSupabaseClient } = await import(
       "@/lib/supabase/service"
@@ -393,57 +415,53 @@ describe("05 — POST /api/analyze & Daily Rate Limiter", () => {
       fetch: dbHarness.mockFetch,
     });
 
+    const mockLookupUsda = vi.fn();
     let activeLookups = 0;
     let maxConcurrentLookups = 0;
 
-    const mockLookupUsda = vi.fn().mockImplementation(async (query: string) => {
+    const mockEstimateMacros = vi.fn().mockImplementation(async (name: string) => {
       activeLookups += 1;
       maxConcurrentLookups = Math.max(maxConcurrentLookups, activeLookups);
       await new Promise((resolve) => setTimeout(resolve, 30));
       activeLookups -= 1;
 
-      if (query === "boiled egg") {
+      if (name.toLowerCase().includes("egg")) {
         return {
-          external_id: "173424",
-          display_name: "Egg, boiled",
           calories_per_100g: 155,
           protein_per_100g: 12.6,
           carbs_per_100g: 1.1,
           fat_per_100g: 10.6,
+          is_estimated: false,
         };
       }
-      if (query === "white rice") {
-        return {
-          external_id: "171287",
-          display_name: "Rice, white, cooked",
-          calories_per_100g: 130,
-          protein_per_100g: 2.7,
-          carbs_per_100g: 28.2,
-          fat_per_100g: 0.3,
-        };
-      }
-      return null;
+      return {
+        calories_per_100g: 130,
+        protein_per_100g: 2.7,
+        carbs_per_100g: 28.2,
+        fat_per_100g: 0.3,
+        is_estimated: false,
+      };
     });
 
     const mockAiProvider = {
       parseMealText: vi.fn().mockResolvedValue([
         {
-          normalized_name: "boiled egg",
+          normalized_name: "boiled egg, cooked",
           display_name: "Boiled Egg (Morning)",
           quantity_g: 50,
         },
         {
-          normalized_name: "boiled egg",
+          normalized_name: "boiled egg, cooked",
           display_name: "Boiled Egg (Extra)",
           quantity_g: 100,
         },
         {
-          normalized_name: "white rice",
+          normalized_name: "white rice, cooked",
           display_name: "White Rice",
           quantity_g: 200,
         },
       ]),
-      estimateMacrosPer100g: vi.fn(),
+      estimateMacrosPer100g: mockEstimateMacros,
     };
 
     const req = new Request("https://example.com/api/analyze", {
@@ -460,21 +478,144 @@ describe("05 — POST /api/analyze & Daily Rate Limiter", () => {
     });
 
     expect(res.status).toBe(200);
-    // "boiled egg" and "white rice" must run concurrently (maxConcurrentLookups >= 2),
-    // while the second "boiled egg" shares the in-flight resolution (total calls === 2).
+    expect(mockLookupUsda).not.toHaveBeenCalled();
     expect(maxConcurrentLookups).toBeGreaterThanOrEqual(2);
-    expect(mockLookupUsda).toHaveBeenCalledTimes(2);
+    expect(mockEstimateMacros).toHaveBeenCalledTimes(2);
+    expect(dbHarness.foodRows).toHaveLength(2);
     const body = (await res.json()) as {
-      items: Array<{ food_name: string; quantity_g: number; calories: number }>;
+      items: Array<{
+        food_name: string;
+        quantity_g: number;
+        calories: number;
+        is_estimated: boolean;
+      }>;
     };
     expect(body.items).toHaveLength(3);
     expect(body.items[0]?.quantity_g).toBe(50);
     expect(body.items[0]?.calories).toBe(77.5);
+    expect(body.items[0]?.is_estimated).toBe(false);
     expect(body.items[1]?.quantity_g).toBe(100);
     expect(body.items[1]?.calories).toBe(155);
     expect(body.items[2]?.quantity_g).toBe(200);
     expect(body.items[2]?.calories).toBe(260);
   });
+
+  it("makes 1 Gemini call on a cold miss and 0 Gemini calls (and 0 extra ai_usage increments) on subsequent requests when items resolve from the foods cache", async () => {
+    mockRequireAuth.mockResolvedValue("user_123");
+    const { createServiceSupabaseClient } = await import(
+      "@/lib/supabase/service"
+    );
+    const { handleAnalyzePost } = await import("@/app/api/analyze/route");
+
+    const dbHarness = createMockAnalyzeSupabase();
+    const supabase = createServiceSupabaseClient({
+      fetch: dbHarness.mockFetch,
+    });
+
+    const mockAiProvider = {
+      parseMealText: vi.fn().mockResolvedValue([
+        {
+          normalized_name: "oats, dry",
+          display_name: "Oats (Dry)",
+          quantity_g: 300,
+          estimated_macros_per_100g: {
+            calories_per_100g: 389,
+            protein_per_100g: 16.9,
+            carbs_per_100g: 66.3,
+            fat_per_100g: 6.9,
+            is_estimated: false,
+          },
+          selected_state: "dry" as const,
+          variants: [
+            {
+              state: "dry" as const,
+              label: "Dry",
+              normalized_name: "oats, dry",
+              display_name: "Oats (Dry)",
+              quantity_g: 300,
+              macros_per_100g: {
+                calories_per_100g: 389,
+                protein_per_100g: 16.9,
+                carbs_per_100g: 66.3,
+                fat_per_100g: 6.9,
+                is_estimated: false,
+              },
+            },
+            {
+              state: "cooked" as const,
+              label: "Cooked",
+              normalized_name: "oats, cooked",
+              display_name: "Oats (Cooked)",
+              quantity_g: 300,
+              macros_per_100g: {
+                calories_per_100g: 71,
+                protein_per_100g: 2.5,
+                carbs_per_100g: 12,
+                fat_per_100g: 1.5,
+                is_estimated: false,
+              },
+            },
+          ],
+        },
+      ]),
+      estimateMacrosPer100g: vi.fn(),
+    };
+
+    // Request #1 (Cold cache miss): calls parseMealText once and writes both variants to `foods`
+    const req1 = new Request("https://example.com/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "300 gms oats" }),
+    });
+    const res1 = await handleAnalyzePost(req1, {
+      supabase,
+      aiProvider: mockAiProvider,
+      now: () => new Date("2026-10-10T12:00:00Z"),
+    });
+    expect(res1.status).toBe(200);
+    expect(mockAiProvider.parseMealText).toHaveBeenCalledTimes(1);
+    expect(mockAiProvider.estimateMacrosPer100g).toHaveBeenCalledTimes(0);
+    expect(dbHarness.usageRows).toEqual([
+      { user_id: "user_123", usage_date: "2026-10-10", count: 1 },
+    ]);
+
+    // Request #2 (Warm cache hit, even with a different gram quantity "150g oats"):
+    // resolves directly from `foods` with 0 Gemini calls and does not increment `ai_usage`
+    const req2 = new Request("https://example.com/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "150g oats" }),
+    });
+    const res2 = await handleAnalyzePost(req2, {
+      supabase,
+      aiProvider: mockAiProvider,
+      now: () => new Date("2026-10-10T12:05:00Z"),
+    });
+    expect(res2.status).toBe(200);
+    expect(mockAiProvider.parseMealText).toHaveBeenCalledTimes(1); // still 1 (0 new calls!)
+    expect(mockAiProvider.estimateMacrosPer100g).toHaveBeenCalledTimes(0);
+    expect(dbHarness.usageRows).toEqual([
+      { user_id: "user_123", usage_date: "2026-10-10", count: 1 },
+    ]);
+    const body2 = (await res2.json()) as {
+      items: Array<{
+        food_name: string;
+        quantity_g: number;
+        calories: number;
+        selected_state?: string;
+        variants?: unknown[];
+      }>;
+    };
+    expect(body2.items).toHaveLength(1);
+    expect(body2.items[0]).toMatchObject({
+      food_name: "Oats (Dry)",
+      quantity_g: 150,
+      calories: 583.5,
+      selected_state: "dry",
+    });
+    expect(body2.items[0]?.variants).toHaveLength(2);
+  });
 });
+
 
 

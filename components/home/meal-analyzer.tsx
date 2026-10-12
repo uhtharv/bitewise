@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import type { PreparationState } from "@/lib/ai/provider";
 import {
   analyzeMeal,
   ApiClientError,
@@ -41,6 +42,7 @@ import {
   canSubmitAnalyzedItems,
   hasInvalidEditableQuantities,
   removeEditableItem,
+  selectEditableItemVariant,
   toEditableAnalyzedItems,
   updateEditableItemQuantity,
   type EditableAnalyzedItem,
@@ -62,6 +64,7 @@ export interface AnalyzedResultsViewProps {
   analyzeError?: string | null;
   saveError?: string | null;
   onQuantityChange?: (clientId: string, rawValue: string) => void;
+  onSelectVariant?: (clientId: string, state: PreparationState) => void;
   onRemoveItem?: (clientId: string) => void;
   onMealTypeChange?: (mealType: MealType) => void;
   onRetryAnalyze?: () => void;
@@ -77,6 +80,7 @@ export function AnalyzedResultsView({
   analyzeError = null,
   saveError = null,
   onQuantityChange,
+  onSelectVariant,
   onRemoveItem,
   onMealTypeChange,
   onRetryAnalyze,
@@ -147,6 +151,8 @@ export function AnalyzedResultsView({
                 const parsedQty = trimmed === "" ? Number.NaN : Number(trimmed);
                 const isItemInvalid =
                   !Number.isFinite(parsedQty) || parsedQty <= 0;
+                const hasVariants =
+                  item.variants !== undefined && item.variants.length >= 2;
 
                 return (
                   <li
@@ -160,6 +166,37 @@ export function AnalyzedResultsView({
                         </span>
                         {item.is_estimated && (
                           <Badge variant="estimated">Estimated</Badge>
+                        )}
+                        {hasVariants && (
+                          <div
+                            role="group"
+                            aria-label={`Preparation state for ${item.food_name}`}
+                            className="inline-flex items-center gap-1 rounded-full bg-canvas p-0.5 border border-border"
+                          >
+                            {item.variants?.map((variant) => {
+                              const isSelected =
+                                (item.selected_state ??
+                                  item.variants?.[0]?.state) === variant.state;
+                              return (
+                                <Button
+                                  key={variant.state}
+                                  type="button"
+                                  size="xs"
+                                  variant={isSelected ? "default" : "ghost"}
+                                  aria-pressed={isSelected}
+                                  onClick={() =>
+                                    onSelectVariant?.(
+                                      item.clientId,
+                                      variant.state
+                                    )
+                                  }
+                                  className="rounded-full px-2.5"
+                                >
+                                  {variant.label}
+                                </Button>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
 
@@ -323,7 +360,7 @@ export function MealAnalyzerFallback() {
               <Skeleton className="min-h-28 w-full rounded-xl bg-canvas-soft" />
               <p className="text-xs text-mute">
                 Meal text is sent to a third-party AI (Google Gemini) to parse
-                items and estimate macros when USDA data is unavailable.
+                items and calculate macros.
               </p>
             </div>
 
@@ -449,7 +486,7 @@ export function MealAnalyzer() {
               />
               <p className="text-xs text-mute">
                 Meal text is sent to a third-party AI (Google Gemini) to parse
-                items and estimate macros when USDA data is unavailable.
+                items and calculate macros.
               </p>
             </div>
 
@@ -486,6 +523,10 @@ export function MealAnalyzer() {
             updateEditableItemQuantity(prev, clientId, rawValue)
           );
         }}
+        onSelectVariant={(clientId, state) => {
+          saveMutation.reset();
+          setItems((prev) => selectEditableItemVariant(prev, clientId, state));
+        }}
         onRemoveItem={(clientId) => {
           saveMutation.reset();
           setItems((prev) => removeEditableItem(prev, clientId));
@@ -508,4 +549,3 @@ export function MealAnalyzer() {
     </div>
   );
 }
-

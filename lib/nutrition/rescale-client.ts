@@ -1,3 +1,4 @@
+import type { PreparationState } from "@/lib/ai/provider";
 import type { CreateEntriesInput } from "@/lib/api/client";
 import type { MealType } from "@/lib/dates";
 import type { ResolvedMealItem } from "@/lib/nutrition/resolve-food";
@@ -5,6 +6,7 @@ import type { ResolvedMealItem } from "@/lib/nutrition/resolve-food";
 export interface EditableAnalyzedItem extends ResolvedMealItem {
   clientId: string;
   rawQuantityInput: string;
+  hasCustomQuantity?: boolean;
 }
 
 export function scaleMacroValue(per100g: number, quantityG: number): number {
@@ -42,6 +44,7 @@ export function toEditableAnalyzedItems(
     ...item,
     clientId: `${item.food_id || item.food_name}-${index}`,
     rawQuantityInput: String(item.quantity_g),
+    hasCustomQuantity: false,
   }));
 }
 
@@ -64,7 +67,51 @@ export function updateEditableItemQuantity(
     return {
       ...rescaled,
       rawQuantityInput: rawInput,
+      hasCustomQuantity: true,
     };
+  });
+}
+
+/**
+ * Switches an analyzed item's active preparation state variant (`dry`/`raw` vs `cooked`).
+ * Uses the variant's default `quantity_g` unless the user has manually edited the Grams input
+ * (`hasCustomQuantity = true`), in which case their custom `quantity_g` is preserved and rescaled.
+ */
+export function selectEditableItemVariant(
+  items: EditableAnalyzedItem[],
+  clientId: string,
+  state: PreparationState
+): EditableAnalyzedItem[] {
+  return items.map((item) => {
+    if (item.clientId !== clientId || !item.variants) {
+      return item;
+    }
+    const targetVariant = item.variants.find((v) => v.state === state);
+    if (!targetVariant) {
+      return item;
+    }
+
+    const nextQuantityG = item.hasCustomQuantity
+      ? item.quantity_g
+      : targetVariant.quantity_g;
+    const nextRawQuantityInput = item.hasCustomQuantity
+      ? item.rawQuantityInput
+      : String(targetVariant.quantity_g);
+
+    const updatedBase: EditableAnalyzedItem = {
+      ...item,
+      selected_state: targetVariant.state,
+      food_id: targetVariant.food_id,
+      food_name: targetVariant.food_name,
+      calories_per_100g: targetVariant.calories_per_100g,
+      protein_per_100g: targetVariant.protein_per_100g,
+      carbs_per_100g: targetVariant.carbs_per_100g,
+      fat_per_100g: targetVariant.fat_per_100g,
+      is_estimated: targetVariant.is_estimated,
+      rawQuantityInput: nextRawQuantityInput,
+    };
+
+    return rescaleAnalyzedItem(updatedBase, nextQuantityG);
   });
 }
 
@@ -121,4 +168,3 @@ export function buildCreateEntriesPayload(
     })),
   };
 }
-

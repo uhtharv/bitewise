@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { MealEntryRow } from "@/lib/supabase/user";
+import type { FoodRow, MealEntryRow } from "@/lib/supabase/user";
 
 const mockRequireAuth = vi.fn();
 
@@ -48,8 +48,12 @@ function extractJwtSub(authHeader: string | null): string | null {
   }
 }
 
-function createMockEntriesRlsFetch(initialEntries: MealEntryRow[] = []) {
+function createMockEntriesRlsFetch(
+  initialEntries: MealEntryRow[] = [],
+  initialFoods: FoodRow[] = []
+) {
   const entries: MealEntryRow[] = [...initialEntries];
+  const foods: FoodRow[] = [...initialFoods];
 
   const mockFetch: typeof fetch = async (input, init) => {
     const url =
@@ -61,6 +65,18 @@ function createMockEntriesRlsFetch(initialEntries: MealEntryRow[] = []) {
     const headers = new Headers(init?.headers);
     const jwtSub = extractJwtSub(headers.get("Authorization"));
     const method = (init?.method ?? "GET").toUpperCase();
+
+    if (url.pathname.endsWith("/rest/v1/foods") && method === "GET") {
+      const eqId = url.searchParams.get("id");
+      const targetFoodId = eqId?.startsWith("eq.") ? eqId.slice(3) : null;
+      const matched = targetFoodId
+        ? foods.filter((f) => f.id === targetFoodId)
+        : foods;
+      return new Response(JSON.stringify(matched), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     if (!url.pathname.endsWith("/rest/v1/meal_entries")) {
       return new Response(JSON.stringify([]), {
@@ -157,7 +173,7 @@ function createMockEntriesRlsFetch(initialEntries: MealEntryRow[] = []) {
     });
   };
 
-  return { mockFetch, entries };
+  return { mockFetch, entries, foods };
 }
 
 describe("06 — Meal Entries CRUD API (/api/entries & /api/entries/:id)", () => {
@@ -218,51 +234,113 @@ describe("06 — Meal Entries CRUD API (/api/entries & /api/entries/:id)", () =>
     });
   });
 
-  it("PATCH /api/entries/:id updates quantity_g and proportionally rescales macros", async () => {
-    mockRequireAuth.mockResolvedValueOnce("user_a");
+  it("PATCH /api/entries/:id rescales from linked foods per-100g macros (preventing small-quantity zero-locking and compound drift) and falls back to ratio scaling when food_id is null", async () => {
+    mockRequireAuth.mockResolvedValue("user_a");
     const { createUserSupabaseClient } = await import("@/lib/supabase/user");
     const { handlePatchEntry } = await import("@/app/api/entries/[id]/route");
 
-    const entryId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    const dbHarness = createMockEntriesRlsFetch([
-      {
-        id: entryId,
-        user_id: "user_a",
-        logged_on: "2026-10-10",
-        meal_type: "lunch",
-        food_id: "11111111-1111-4111-8111-111111111111",
-        food_name: "Dal Tadka",
-        quantity_g: 300,
-        calories: 330,
-        protein_g: 16.5,
-        carbs_g: 42,
-        fat_g: 10.5,
-        is_estimated: true,
-        created_at: "2026-10-10T12:00:00Z",
-      },
-    ]);
+    const foodId = "11111111-1111-4111-8111-111111111111";
+    const linkedEntryId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const unlinkedEntryId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+    const dbHarness = createMockEntriesRlsFetch(
+      [
+        {
+          id: linkedEntryId,
+          user_id: "user_a",
+          logged_on: "2026-10-10",
+          meal_type: "lunch",
+          food_id: foodId,
+          food_name: "Dal Tadka",
+          quantity_g: 1,
+          calories: 1.1,
+          protein_g: 0.1,
+          carbs_g: 0.1,
+          fat_g: 0, // Rounded to 0 at 1g from 3.5g/100g
+          is_estimated: true,
+          created_at: "2026-10-10T12:00:00Z",
+        },
+        {
+          id: unlinkedEntryId,
+          user_id: "user_a",
+          logged_on: "2026-10-10",
+          meal_type: "dinner",
+          food_id: null,
+          food_name: "Custom Dish",
+          quantity_g: 300,
+          calories: 330,
+          protein_g: 16.5,
+          carbs_g: 42,
+          fat_g: 10.5,
+          is_estimated: true,
+          created_at: "2026-10-10T19:00:00Z",
+        },
+      ],
+      [
+        {
+          id: foodId,
+          normalized_name: "dal tadka",
+          display_name: "Dal Tadka",
+          calories_per_100g: 110,
+          protein_per_100g: 5.5,
+          carbs_per_100g: 14,
+          fat_per_100g: 3.5,
+          source: "gemini",
+          external_id: null,
+          is_estimated: true,
+          created_at: "2026-10-10T10:00:00Z",
+        },
+      ]
+    );
     const userClient = createUserSupabaseClient({
       accessToken: async () => createMockClerkJwt("user_a"),
       fetch: dbHarness.mockFetch,
     });
 
-    const req = new Request(`https://example.com/api/entries/${entryId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ quantity_g: 150 }),
-    });
+    // 1. Patch linked entry from 1g (where fat_g was 0) -> 7g -> 19g -> 300g: zero drift and recovers fat_g = 10.5
+    for (const qty of [7, 19, 300]) {
+      const res = await handlePatchEntry(
+        new Request(`https://example.com/api/entries/${linkedEntryId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quantity_g: qty }),
+        }),
+        linkedEntryId,
+        { supabase: userClient }
+      );
+      expect(res.status).toBe(200);
+      if (qty === 300) {
+        const body = (await res.json()) as { entry: MealEntryRow };
+        expect(body.entry).toMatchObject({
+          id: linkedEntryId,
+          quantity_g: 300,
+          calories: 330,
+          protein_g: 16.5,
+          carbs_g: 42,
+          fat_g: 10.5,
+        });
+      }
+    }
 
-    const res = await handlePatchEntry(req, entryId, { supabase: userClient });
-
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { entry: MealEntryRow };
-    expect(body.entry).toMatchObject({
-      id: entryId,
+    // 2. Patch unlinked entry (food_id = null) from 300g -> 150g: falls back to ratio scaling with 1-decimal rounding
+    const unlinkedRes = await handlePatchEntry(
+      new Request(`https://example.com/api/entries/${unlinkedEntryId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity_g: 150 }),
+      }),
+      unlinkedEntryId,
+      { supabase: userClient }
+    );
+    expect(unlinkedRes.status).toBe(200);
+    const unlinkedBody = (await unlinkedRes.json()) as { entry: MealEntryRow };
+    expect(unlinkedBody.entry).toMatchObject({
+      id: unlinkedEntryId,
       quantity_g: 150,
       calories: 165,
-      protein_g: 8.25,
+      protein_g: 8.3,
       carbs_g: 21,
-      fat_g: 5.25,
+      fat_g: 5.3,
     });
   });
 

@@ -5,6 +5,7 @@ import { requireAuth } from "@/lib/auth";
 import {
   createUserSupabaseClient,
   type Database,
+  type FoodRow,
 } from "@/lib/supabase/user";
 
 const entryIdSchema = z.string().uuid();
@@ -25,13 +26,17 @@ function errorResponse(
   return NextResponse.json({ error: { code, message } }, { status });
 }
 
-function rescaleMacro(
+function scaleFromPer100g(per100g: number, quantityG: number): number {
+  return Math.round(((per100g * quantityG) / 100) * 10) / 10;
+}
+
+function rescaleMacroFallback(
   oldMacro: number,
   oldQuantityG: number,
   newQuantityG: number
 ): number {
   const per100gMacro = (oldMacro * 100) / oldQuantityG;
-  return Math.round(per100gMacro * (newQuantityG / 100) * 100) / 100;
+  return scaleFromPer100g(per100gMacro, newQuantityG);
 }
 
 export async function handlePatchEntry(
@@ -88,26 +93,55 @@ export async function handlePatchEntry(
   const oldQuantityG = Number(existing.quantity_g);
   const newQuantityG = parsedBody.data.quantity_g;
 
+  let linkedFood: FoodRow | null = null;
+  if (existing.food_id) {
+    const { data: foodRows } = await supabase
+      .from("foods")
+      .select("*")
+      .eq("id", existing.food_id);
+
+    if (foodRows && foodRows.length > 0) {
+      linkedFood = foodRows[0];
+    }
+  }
+
+  const nextCalories = linkedFood
+    ? scaleFromPer100g(Number(linkedFood.calories_per_100g), newQuantityG)
+    : rescaleMacroFallback(
+        Number(existing.calories),
+        oldQuantityG,
+        newQuantityG
+      );
+  const nextProteinG = linkedFood
+    ? scaleFromPer100g(Number(linkedFood.protein_per_100g), newQuantityG)
+    : rescaleMacroFallback(
+        Number(existing.protein_g),
+        oldQuantityG,
+        newQuantityG
+      );
+  const nextCarbsG = linkedFood
+    ? scaleFromPer100g(Number(linkedFood.carbs_per_100g), newQuantityG)
+    : rescaleMacroFallback(
+        Number(existing.carbs_g),
+        oldQuantityG,
+        newQuantityG
+      );
+  const nextFatG = linkedFood
+    ? scaleFromPer100g(Number(linkedFood.fat_per_100g), newQuantityG)
+    : rescaleMacroFallback(
+        Number(existing.fat_g),
+        oldQuantityG,
+        newQuantityG
+      );
+
   const { data: updatedRows, error: updateError } = await supabase
     .from("meal_entries")
     .update({
       quantity_g: newQuantityG,
-      calories: rescaleMacro(
-        Number(existing.calories),
-        oldQuantityG,
-        newQuantityG
-      ),
-      protein_g: rescaleMacro(
-        Number(existing.protein_g),
-        oldQuantityG,
-        newQuantityG
-      ),
-      carbs_g: rescaleMacro(
-        Number(existing.carbs_g),
-        oldQuantityG,
-        newQuantityG
-      ),
-      fat_g: rescaleMacro(Number(existing.fat_g), oldQuantityG, newQuantityG),
+      calories: nextCalories,
+      protein_g: nextProteinG,
+      carbs_g: nextCarbsG,
+      fat_g: nextFatG,
     })
     .eq("id", parsedId.data)
     .select("*");
@@ -179,4 +213,3 @@ export async function DELETE(
   const { id } = await context.params;
   return handleDeleteEntry(id);
 }
-

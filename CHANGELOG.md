@@ -5,6 +5,18 @@ All notable changes to **Bitewise** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [1.1.0](https://github.com/uhtharv/bitewise/compare/v1.0.1...v1.1.0) (2026-10-12)
+
+
+### Added
+
+* **analyze:** add Dry/Cooked preparation variant switcher and 0-call cache-first meal resolution (FR-2, FR-3) ([d56cef3](https://github.com/uhtharv/bitewise/commit/d56cef3b8db48b775b49da019bb836bf58f35768))
+
+
+### Fixed
+
+* **nutrition:** enforce physical/Atwater macro validation, multi-model fallback, and lossless entry rescaling (FR-2, FR-5, FR-7) ([8c6ecf2](https://github.com/uhtharv/bitewise/commit/8c6ecf2aef166b84c83f835e653986eaf4cf29c6))
+
 ## [1.0.1] - 2026-10-11
 
 ### Fixed
@@ -22,4 +34,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Daily Meal Tracker (`FR-4`, `FR-5`):** `/today` route displaying daily calorie and macro totals, goal progress bars with over-goal warning states, meal-grouped entries, inline quantity editing (`PATCH /api/entries/:id`), and entry deletion (`DELETE /api/entries/:id`).
 - **Goals & Timezone Settings (`FR-6`):** `/settings` route (`GET` / `PUT /api/settings`) with nullable daily calorie/macro targets and IANA timezone selection (auto-detected from browser when unset).
 - **Database Schema & RLS Isolation:** Supabase PostgreSQL schema (`0001_initial_schema.sql`) with Row Level Security policies on `foods`, `meal_entries`, `user_settings`, and `ai_usage`, verified by automated RLS isolation tests.
-

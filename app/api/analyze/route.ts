@@ -10,11 +10,13 @@ import { requireAuth } from "@/lib/auth";
 import {
   resolveFoodItem,
   tryResolveMealTextFromCache,
+  type ResolvedFoodNutrientRow,
   type ResolvedMealItem,
 } from "@/lib/nutrition/resolve-food";
 import { type UsdaFoodMatch } from "@/lib/nutrition/usda";
+import { createFoodReferenceClient } from "@/lib/supabase/food-db";
 import { createServiceSupabaseClient } from "@/lib/supabase/service";
-import type { Database, FoodRow } from "@/lib/supabase/user";
+import type { Database } from "@/lib/supabase/user";
 
 const DAILY_AI_ANALYSIS_LIMIT = 30;
 
@@ -24,6 +26,7 @@ export const analyzeRequestSchema = z.object({
 
 export interface AnalyzeRouteDependencies {
   supabase?: SupabaseClient<Database>;
+  foodDbClient?: SupabaseClient;
   aiProvider?: AIProvider;
   lookupUsdaFood?: (query: string) => Promise<UsdaFoodMatch | null>;
   now?: () => Date;
@@ -40,7 +43,7 @@ function errorResponse(
 export async function handleAnalyzePost(
   request: Request,
   deps?: AnalyzeRouteDependencies
-): Promise<NextResponse> {
+): Promise<Response> {
   const authResult = await requireAuth();
   if (authResult instanceof NextResponse) {
     return authResult;
@@ -64,6 +67,11 @@ export async function handleAnalyzePost(
   }
 
   const supabase = deps?.supabase ?? createServiceSupabaseClient();
+  const foodDbClient =
+    deps?.foodDbClient ??
+    (deps?.supabase
+      ? (deps.supabase as unknown as SupabaseClient)
+      : createFoodReferenceClient());
   const usageDate = (deps?.now ? deps.now() : new Date())
     .toISOString()
     .slice(0, 10);
@@ -97,12 +105,47 @@ export async function handleAnalyzePost(
     );
   }
 
-  // Step 1.5: Cache-first resolution against shared `foods` table (0 Gemini calls when all items hit cache)
+  const wantsSse = Boolean(
+    request.headers.get("accept")?.includes("text/event-stream")
+  );
+
+  // Step 1.5: Cache-first resolution (0 Gemini calls when clean segments match)
   const cachedItems = await tryResolveMealTextFromCache(
     parsedInput.data.text,
-    supabase
+    supabase,
+    foodDbClient
   );
   if (cachedItems && cachedItems.length > 0) {
+    if (wantsSse) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              `event: start\ndata: ${JSON.stringify({ total: cachedItems.length })}\n\n`
+            )
+          );
+          for (const item of cachedItems) {
+            controller.enqueue(
+              encoder.encode(`event: item\ndata: ${JSON.stringify(item)}\n\n`)
+            );
+          }
+          controller.enqueue(
+            encoder.encode(
+              `event: done\ndata: ${JSON.stringify({ items: cachedItems })}\n\n`
+            )
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        },
+      });
+    }
     return NextResponse.json({ items: cachedItems }, { status: 200 });
   }
 
@@ -144,7 +187,7 @@ export async function handleAnalyzePost(
     );
   }
 
-  // Step 3: Increment `ai_usage` concurrently with resolving items via `foods` cache / Gemini macros
+  // Step 3: Increment `ai_usage` concurrently with resolving items
   const usageWritePromise = existingRow
     ? supabase
         .from("ai_usage")
@@ -159,9 +202,69 @@ export async function handleAnalyzePost(
 
   const inFlightFoods = new Map<
     string,
-    Promise<{ food: FoodRow; fromCache: boolean }>
+    Promise<{ food: ResolvedFoodNutrientRow; fromCache: boolean }>
   >();
 
+  // If client requested SSE streaming, stream items card-by-card as they resolve
+  if (wantsSse) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `event: start\ndata: ${JSON.stringify({ total: parsedItems.length })}\n\n`
+          )
+        );
+
+        const resolvedItems: ResolvedMealItem[] = [];
+        try {
+          await Promise.all([
+            usageWritePromise,
+            Promise.all(
+              parsedItems.map(async (item) => {
+                const resolved = await resolveFoodItem(item, {
+                  supabase,
+                  foodDbClient,
+                  aiProvider,
+                  inFlightFoods,
+                });
+                resolvedItems.push(resolved);
+                controller.enqueue(
+                  encoder.encode(
+                    `event: item\ndata: ${JSON.stringify(resolved)}\n\n`
+                  )
+                );
+              })
+            ),
+          ]);
+
+          controller.enqueue(
+            encoder.encode(
+              `event: done\ndata: ${JSON.stringify({ items: resolvedItems })}\n\n`
+            )
+          );
+        } catch {
+          controller.enqueue(
+            encoder.encode(
+              `event: error\ndata: ${JSON.stringify({ message: "Upstream nutrition lookup failed" })}\n\n`
+            )
+          );
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
+  // Standard JSON response fallback
   let resolvedItems: ResolvedMealItem[];
   let usageWriteResult: Awaited<typeof usageWritePromise>;
   try {
@@ -171,6 +274,7 @@ export async function handleAnalyzePost(
         parsedItems.map((item) =>
           resolveFoodItem(item, {
             supabase,
+            foodDbClient,
             aiProvider,
             inFlightFoods,
           })
@@ -205,7 +309,6 @@ export async function handleAnalyzePost(
   return NextResponse.json({ items: resolvedItems }, { status: 200 });
 }
 
-export async function POST(request: Request): Promise<NextResponse> {
+export async function POST(request: Request): Promise<Response> {
   return handleAnalyzePost(request);
 }
-

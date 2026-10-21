@@ -8,13 +8,17 @@ import {
 } from "@/lib/supabase/user";
 
 const createEntryItemSchema = z.object({
-  food_id: z.string().uuid().nullable().optional(),
+  food_id: z.string().nullable().optional(),
   food_name: z.string().trim().min(1),
   quantity_g: z.number().positive(),
   calories: z.number().min(0),
   protein_g: z.number().min(0),
   carbs_g: z.number().min(0),
   fat_g: z.number().min(0),
+  calories_per_100g: z.number().min(0).nullable().optional(),
+  protein_per_100g: z.number().min(0).nullable().optional(),
+  carbs_per_100g: z.number().min(0).nullable().optional(),
+  fat_per_100g: z.number().min(0).nullable().optional(),
   is_estimated: z.boolean(),
 });
 
@@ -23,6 +27,17 @@ export const createEntriesRequestSchema = z.object({
   meal_type: z.enum(["breakfast", "lunch", "dinner", "snack"]),
   items: z.array(createEntryItemSchema).min(1),
 });
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function sanitizeFoodId(foodId?: string | null): string | null {
+  if (!foodId) {
+    return null;
+  }
+  const trimmed = foodId.trim();
+  return UUID_REGEX.test(trimmed) ? trimmed : null;
+}
 
 export interface EntriesRouteDependencies {
   supabase?: SupabaseClient<Database>;
@@ -63,19 +78,38 @@ export async function handleCreateEntries(
   }
 
   const supabase = deps?.supabase ?? createUserSupabaseClient();
-  const rowsToInsert = parsedInput.data.items.map((item) => ({
-    user_id: userId,
-    logged_on: parsedInput.data.logged_on,
-    meal_type: parsedInput.data.meal_type,
-    food_id: item.food_id ?? null,
-    food_name: item.food_name,
-    quantity_g: item.quantity_g,
-    calories: item.calories,
-    protein_g: item.protein_g,
-    carbs_g: item.carbs_g,
-    fat_g: item.fat_g,
-    is_estimated: item.is_estimated,
-  }));
+  const rowsToInsert = parsedInput.data.items.map((item) => {
+    const caloriesPer100g =
+      item.calories_per_100g ??
+      Math.round(((item.calories * 100) / item.quantity_g) * 10) / 10;
+    const proteinPer100g =
+      item.protein_per_100g ??
+      Math.round(((item.protein_g * 100) / item.quantity_g) * 10) / 10;
+    const carbsPer100g =
+      item.carbs_per_100g ??
+      Math.round(((item.carbs_g * 100) / item.quantity_g) * 10) / 10;
+    const fatPer100g =
+      item.fat_per_100g ??
+      Math.round(((item.fat_g * 100) / item.quantity_g) * 10) / 10;
+
+    return {
+      user_id: userId,
+      logged_on: parsedInput.data.logged_on,
+      meal_type: parsedInput.data.meal_type,
+      food_id: sanitizeFoodId(item.food_id),
+      food_name: item.food_name,
+      quantity_g: item.quantity_g,
+      calories: item.calories,
+      protein_g: item.protein_g,
+      carbs_g: item.carbs_g,
+      fat_g: item.fat_g,
+      calories_per_100g: caloriesPer100g,
+      protein_per_100g: proteinPer100g,
+      carbs_per_100g: carbsPer100g,
+      fat_per_100g: fatPer100g,
+      is_estimated: item.is_estimated,
+    };
+  });
 
   const { data: insertedRows, error } = await supabase
     .from("meal_entries")
@@ -83,6 +117,7 @@ export async function handleCreateEntries(
     .select("*");
 
   if (error || !insertedRows) {
+    console.error("[POST /api/entries] Insert error:", error);
     return errorResponse(
       502,
       "UPSTREAM_ERROR",

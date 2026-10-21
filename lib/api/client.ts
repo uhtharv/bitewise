@@ -32,6 +32,10 @@ export interface CreateEntryItemInput {
   protein_g: number;
   carbs_g: number;
   fat_g: number;
+  calories_per_100g?: number | null;
+  protein_per_100g?: number | null;
+  carbs_per_100g?: number | null;
+  fat_per_100g?: number | null;
   is_estimated: boolean;
 }
 
@@ -79,6 +83,7 @@ export interface ApiClientDependencies {
 
 function defaultOnUnauthorized(): void {
   if (typeof window !== "undefined") {
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = "/sign-in";
   }
 }
@@ -128,6 +133,95 @@ export async function analyzeMeal(
     },
     deps
   );
+}
+
+export async function analyzeMealStream(
+  text: string,
+  onItem: (item: ResolvedMealItem) => void,
+  deps?: ApiClientDependencies
+): Promise<{ items: ResolvedMealItem[] }> {
+  const fetchFn = deps?.fetchImpl ?? fetch;
+  const onUnauthorized = deps?.onUnauthorized ?? defaultOnUnauthorized;
+
+  let response: Response;
+  try {
+    response = await fetchFn("/api/analyze", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream, application/json",
+      },
+      body: JSON.stringify({ text }),
+    });
+  } catch {
+    throw new ApiClientError(502);
+  }
+
+  if (response.status === 401) {
+    onUnauthorized();
+    throw new ApiClientError(401, "Redirecting to sign in...");
+  }
+
+  if (!response.ok) {
+    throw new ApiClientError(response.status);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("text/event-stream") || !response.body) {
+    const json = (await response.json()) as { items: ResolvedMealItem[] };
+    if (json.items) {
+      json.items.forEach(onItem);
+    }
+    return json;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const collectedItems: ResolvedMealItem[] = [];
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop() ?? "";
+
+      for (const block of lines) {
+        if (!block.trim()) continue;
+        const eventMatch = block.match(/event:\s*([^\n]+)/);
+        const dataMatch = block.match(/data:\s*([^\n]+)/);
+        const event = eventMatch ? eventMatch[1].trim() : "message";
+        const dataStr = dataMatch ? dataMatch[1].trim() : "";
+
+        if (event === "item" && dataStr) {
+          try {
+            const item = JSON.parse(dataStr) as ResolvedMealItem;
+            collectedItems.push(item);
+            onItem(item);
+          } catch {
+            // Ignore malformed event data
+          }
+        } else if (event === "done" && dataStr) {
+          try {
+            const result = JSON.parse(dataStr) as { items: ResolvedMealItem[] };
+            if (result.items && result.items.length > 0) {
+              return result;
+            }
+          } catch {
+            // Return collected items below
+          }
+        } else if (event === "error") {
+          throw new ApiClientError(502);
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return { items: collectedItems };
 }
 
 export async function createEntries(

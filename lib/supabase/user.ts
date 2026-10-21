@@ -31,6 +31,10 @@ export type MealEntryRow = {
   protein_g: number;
   carbs_g: number;
   fat_g: number;
+  calories_per_100g?: number | null;
+  protein_per_100g?: number | null;
+  carbs_per_100g?: number | null;
+  fat_per_100g?: number | null;
   is_estimated: boolean;
   created_at: string;
 };
@@ -98,6 +102,10 @@ export type Database = {
           protein_g: number;
           carbs_g: number;
           fat_g: number;
+          calories_per_100g?: number | null;
+          protein_per_100g?: number | null;
+          carbs_per_100g?: number | null;
+          fat_per_100g?: number | null;
           is_estimated?: boolean;
           created_at?: string;
         };
@@ -113,17 +121,14 @@ export type Database = {
           protein_g?: number;
           carbs_g?: number;
           fat_g?: number;
+          calories_per_100g?: number | null;
+          protein_per_100g?: number | null;
+          carbs_per_100g?: number | null;
+          fat_per_100g?: number | null;
           is_estimated?: boolean;
           created_at?: string;
         };
-        Relationships: [
-          {
-            foreignKeyName: "meal_entries_food_id_fkey";
-            columns: ["food_id"];
-            referencedRelation: "foods";
-            referencedColumns: ["id"];
-          },
-        ];
+        Relationships: [];
       };
       user_settings: {
         Row: UserSettingsRow;

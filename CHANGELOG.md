@@ -5,6 +5,13 @@ All notable changes to **Bitewise** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.1.0](https://github.com/uhtharv/bitewise/compare/v2.0.0...v2.1.0) (2026-10-21)
+
+
+### Added
+
+* **auth:** make authentication optional with public guest trial on Home (FR-1) ([#5](https://github.com/uhtharv/bitewise/issues/5)) ([00f6756](https://github.com/uhtharv/bitewise/commit/00f675606e061107ed0d1c192012cdaf99aae815))
+
 ## [2.0.0](https://github.com/uhtharv/bitewise/compare/v1.1.0...v2.0.0) (2026-10-21)
 
 

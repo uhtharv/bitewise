@@ -8,18 +8,23 @@ import {
   normalizeAndValidateMacrosPer100g,
   normalizeHouseholdUnitToGrams,
   type AIProvider,
+  type CandidateIngredient,
   type MacroPer100g,
   type ParsedMealItem,
   type PreparationState,
 } from "@/lib/ai/provider";
+import {
+  createFoodReferenceClient,
+  searchFoodReference,
+  type ReferenceFoodMatch,
+} from "@/lib/supabase/food-db";
 import { type UsdaFoodMatch } from "@/lib/nutrition/usda";
-import { createServiceSupabaseClient } from "@/lib/supabase/service";
-import type { Database, FoodRow } from "@/lib/supabase/user";
+import type { Database, FoodSource } from "@/lib/supabase/user";
 
 export interface ResolvedMealVariant {
   state: PreparationState;
   label: string;
-  food_id: string;
+  food_id: string | null;
   food_name: string;
   quantity_g: number;
   calories: number;
@@ -34,7 +39,7 @@ export interface ResolvedMealVariant {
 }
 
 export interface ResolvedMealItem {
-  food_id: string;
+  food_id: string | null;
   food_name: string;
   quantity_g: number;
   calories: number;
@@ -50,19 +55,47 @@ export interface ResolvedMealItem {
   variants?: ResolvedMealVariant[];
 }
 
+export type ResolvedFoodNutrientRow = {
+  id: string | null;
+  normalized_name: string;
+  display_name: string;
+  calories_per_100g: number;
+  protein_per_100g: number;
+  carbs_per_100g: number;
+  fat_per_100g: number;
+  source: FoodSource;
+  external_id: string | null;
+  is_estimated: boolean;
+  created_at: string;
+};
+
 export interface ResolveFoodDependencies {
   supabase?: SupabaseClient<Database>;
+  foodDbClient?: SupabaseClient;
+  searchFoodRef?: typeof searchFoodReference;
   lookupUsdaFood?: (query: string) => Promise<UsdaFoodMatch | null>;
   aiProvider?: AIProvider;
-  inFlightFoods?: Map<string, Promise<{ food: FoodRow; fromCache: boolean }>>;
+  inFlightFoods?: Map<string, Promise<{ food: ResolvedFoodNutrientRow; fromCache: boolean }>>;
 }
 
-function scaleMacro(per100g: number, quantityG: number): number {
+/**
+ * Deterministic business logic serving multiplication:
+ * Nutrient Value = round((Nutrient per 100g * Portion Weight) / 100, 1)
+ */
+export function scaleMacro(per100g: number, quantityG: number): number {
   return Math.round(((per100g * quantityG) / 100) * 10) / 10;
 }
 
 function toResolvedMealItem(
-  food: FoodRow,
+  food: {
+    id: string | null;
+    display_name: string;
+    calories_per_100g: number;
+    protein_per_100g: number;
+    carbs_per_100g: number;
+    fat_per_100g: number;
+    is_estimated?: boolean;
+  },
   displayName: string,
   quantityG: number
 ): ResolvedMealItem {
@@ -87,29 +120,133 @@ function toResolvedMealItem(
   };
 }
 
-async function resolveOrCreateFoodRow(
-  inlineMacros: MacroPer100g | undefined,
+/**
+ * Resolves food nutrition using the two-tier Hybrid LLM-to-Database Pipeline:
+ * Tier 1: Search Database A (USDA + IFCT + Open Food Facts) via pg_trgm + FTS (min confidence 0.35).
+ * Tier 2 Fallback A: Predictive Deconstruction into base ingredients in Database A.
+ * Tier 2 Fallback B: Emergency AI estimate explicitly flagged is_estimated = true.
+ */
+async function resolveNutrientsFromHybridPipeline(
+  query: string,
   normalizedName: string,
   displayName: string,
+  candidateIngredients: CandidateIngredient[] | undefined,
+  inlineMacros: MacroPer100g | undefined,
   deps?: ResolveFoodDependencies
-): Promise<{ food: FoodRow; fromCache: boolean }> {
-  const supabase = deps?.supabase ?? createServiceSupabaseClient();
+): Promise<{
+  id: string | null;
+  display_name: string;
+  calories_per_100g: number;
+  protein_per_100g: number;
+  carbs_per_100g: number;
+  fat_per_100g: number;
+  is_estimated: boolean;
+}> {
+  const searchFn = deps?.searchFoodRef ?? searchFoodReference;
+  const foodDbClient =
+    deps?.foodDbClient ??
+    (deps?.supabase ? (deps.supabase as unknown as SupabaseClient) : createFoodReferenceClient());
 
-  // Step 2: Cache Lookup (`foods` table)
-  const { data: cachedRows, error: cacheError } = await supabase
-    .from("foods")
-    .select("*")
-    .eq("normalized_name", normalizedName);
 
-  if (cacheError) {
-    throw new Error(`Failed to query foods cache: ${cacheError.message}`);
+  // Tier 1: Database A Hybrid Search
+  try {
+    const matches = await searchFn(query, {
+      client: foodDbClient,
+      minSimilarity: 0.35,
+    });
+
+    if (matches && matches.length > 0 && matches[0].similarity_score >= 0.35) {
+      const topMatch = matches[0];
+      return {
+        id: topMatch.id,
+        display_name: topMatch.display_name || displayName,
+        calories_per_100g: Number(topMatch.calories_per_100g),
+        protein_per_100g: Number(topMatch.protein_per_100g),
+        carbs_per_100g: Number(topMatch.carbs_per_100g),
+        fat_per_100g: Number(topMatch.fat_per_100g),
+        is_estimated: Boolean(topMatch.is_estimated),
+      };
+    }
+  } catch {
+    // If Database A RPC is unavailable or errored, proceed to legacy cache or fallback
   }
 
-  if (cachedRows && cachedRows.length > 0) {
-    return { food: cachedRows[0], fromCache: true };
+  // Legacy foods table check in deps.supabase (for backward compatibility in existing tests)
+  if (deps?.supabase) {
+    try {
+      const { data: cachedRows } = await deps.supabase
+        .from("foods")
+        .select("*")
+        .eq("normalized_name", normalizedName);
+
+      if (cachedRows && cachedRows.length > 0) {
+        const row = cachedRows[0];
+        return {
+          id: row.id,
+          display_name: row.display_name,
+          calories_per_100g: Number(row.calories_per_100g),
+          protein_per_100g: Number(row.protein_per_100g),
+          carbs_per_100g: Number(row.carbs_per_100g),
+          fat_per_100g: Number(row.fat_per_100g),
+          is_estimated: Boolean(row.is_estimated),
+        };
+      }
+    } catch {
+      // Table may not exist if dropped
+    }
   }
 
-  // Step 3: Gemini single-pass macros (or `estimateMacrosPer100g` fallback when inline macros omitted)
+  // Tier 2 Fallback A: Predictive Deconstruction against Database A
+  if (candidateIngredients && candidateIngredients.length > 0) {
+    try {
+      const ingredientLookups = await Promise.all(
+        candidateIngredients.map((ing) =>
+          searchFn(ing.normalized_query || ing.name, {
+            client: foodDbClient,
+            minSimilarity: 0.35,
+          }).catch(() => [] as ReferenceFoodMatch[])
+        )
+      );
+
+      const allMatched = ingredientLookups.every(
+        (res) => res && res.length > 0 && res[0].similarity_score >= 0.35
+      );
+
+      if (allMatched) {
+        let totalCal = 0;
+        let totalProt = 0;
+        let totalCarb = 0;
+        let totalFat = 0;
+        let totalWeight = 0;
+
+        candidateIngredients.forEach((ing, i) => {
+          const match = ingredientLookups[i][0];
+          totalCal += scaleMacro(Number(match.calories_per_100g), ing.quantity_g);
+          totalProt += scaleMacro(Number(match.protein_per_100g), ing.quantity_g);
+          totalCarb += scaleMacro(Number(match.carbs_per_100g), ing.quantity_g);
+          totalFat += scaleMacro(Number(match.fat_per_100g), ing.quantity_g);
+          totalWeight += ing.quantity_g;
+        });
+
+        if (totalWeight > 0) {
+          const per100Multiplier = 100 / totalWeight;
+          return {
+            id: null,
+            display_name: displayName,
+            calories_per_100g: Math.round(totalCal * per100Multiplier * 10) / 10,
+            protein_per_100g: Math.round(totalProt * per100Multiplier * 10) / 10,
+            carbs_per_100g: Math.round(totalCarb * per100Multiplier * 10) / 10,
+            fat_per_100g: Math.round(totalFat * per100Multiplier * 10) / 10,
+            is_estimated: false,
+          };
+        }
+      }
+    } catch {
+      // Ingredient matching failed, fall through to emergency AI estimate
+    }
+  }
+
+  // Tier 2 Fallback B: Emergency AI estimate explicitly flagged is_estimated = true
   const rawEstimate =
     inlineMacros ??
     (await (deps?.aiProvider ?? new GeminiProvider()).estimateMacrosPer100g(
@@ -119,62 +256,100 @@ async function resolveOrCreateFoodRow(
   const estimate = normalizeAndValidateMacrosPer100g(rawEstimate);
   const isEstimated = estimate.is_estimated ?? true;
 
-  const { data: insertedGeminiRows, error: insertGeminiError } = await supabase
-    .from("foods")
-    .upsert(
-      {
-        normalized_name: normalizedName,
-        display_name: displayName,
-        calories_per_100g: estimate.calories_per_100g,
-        protein_per_100g: estimate.protein_per_100g,
-        carbs_per_100g: estimate.carbs_per_100g,
-        fat_per_100g: estimate.fat_per_100g,
-        source: "gemini",
-        external_id: null,
-        is_estimated: isEstimated,
-      },
-      { onConflict: "normalized_name" }
-    )
-    .select("*");
+  // If Database B still has foods table (for backward-compatible tests), cache it
+  if (deps?.supabase) {
+    try {
+      const { data: insertedRows } = await deps.supabase
+        .from("foods")
+        .upsert(
+          {
+            normalized_name: normalizedName,
+            display_name: displayName,
+            calories_per_100g: estimate.calories_per_100g,
+            protein_per_100g: estimate.protein_per_100g,
+            carbs_per_100g: estimate.carbs_per_100g,
+            fat_per_100g: estimate.fat_per_100g,
+            source: "gemini",
+            external_id: null,
+            is_estimated: isEstimated,
+          },
+          { onConflict: "normalized_name" }
+        )
+        .select("*");
 
-  if (
-    insertGeminiError ||
-    !insertedGeminiRows ||
-    insertedGeminiRows.length === 0
-  ) {
-    throw new Error(
-      `Failed to cache Gemini food in foods table: ${
-        insertGeminiError?.message ?? "No row returned"
-      }`
-    );
+      if (insertedRows && insertedRows.length > 0) {
+        const row = insertedRows[0];
+        return {
+          id: row.id,
+          display_name: row.display_name,
+          calories_per_100g: Number(row.calories_per_100g),
+          protein_per_100g: Number(row.protein_per_100g),
+          carbs_per_100g: Number(row.carbs_per_100g),
+          fat_per_100g: Number(row.fat_per_100g),
+          is_estimated: Boolean(row.is_estimated),
+        };
+      }
+    } catch {
+      // Legacy table may not exist
+    }
   }
 
-  return { food: insertedGeminiRows[0], fromCache: false };
+  return {
+    id: null,
+    display_name: displayName,
+    calories_per_100g: estimate.calories_per_100g,
+    protein_per_100g: estimate.protein_per_100g,
+    carbs_per_100g: estimate.carbs_per_100g,
+    fat_per_100g: estimate.fat_per_100g,
+    is_estimated: isEstimated,
+  };
 }
 
-async function resolveSingleFoodRowDeduped(
-  inlineMacros: MacroPer100g | undefined,
+async function resolveSingleNutrientsDeduped(
+  query: string,
   normalizedName: string,
   displayName: string,
+  candidateIngredients: CandidateIngredient[] | undefined,
+  inlineMacros: MacroPer100g | undefined,
   deps?: ResolveFoodDependencies
-): Promise<{ food: FoodRow; fromCache: boolean }> {
-  let rowPromise = deps?.inFlightFoods?.get(normalizedName);
-  if (!rowPromise) {
-    rowPromise = resolveOrCreateFoodRow(
-      inlineMacros,
-      normalizedName,
-      displayName,
-      deps
-    );
-    deps?.inFlightFoods?.set(normalizedName, rowPromise);
+) {
+  let inFlightPromise = deps?.inFlightFoods?.get(normalizedName);
+  if (!inFlightPromise) {
+    inFlightPromise = (async () => {
+      const res = await resolveNutrientsFromHybridPipeline(
+        query,
+        normalizedName,
+        displayName,
+        candidateIngredients,
+        inlineMacros,
+        deps
+      );
+      return {
+        food: {
+          id: res.id,
+          normalized_name: normalizedName,
+          display_name: res.display_name,
+          calories_per_100g: res.calories_per_100g,
+          protein_per_100g: res.protein_per_100g,
+          carbs_per_100g: res.carbs_per_100g,
+          fat_per_100g: res.fat_per_100g,
+          source: "gemini" as const,
+          external_id: null,
+          is_estimated: res.is_estimated,
+          created_at: new Date().toISOString(),
+        },
+        fromCache: false,
+      };
+    })();
+    deps?.inFlightFoods?.set(normalizedName, inFlightPromise);
   }
-  return rowPromise;
+  const result = await inFlightPromise;
+  return result.food;
 }
 
 /**
- * Resolves a parsed food item (and its optional preparation `variants`) following the locked order of truth (`docs/BACKEND_PRD.md` §7):
- *   1. `foods` cache (by state-specific `normalized_name`)
- *   2. Gemini validated per-100g macros (`source = 'gemini'`, `is_estimated` false for staples / true for composite dishes)
+ * Resolves a parsed food item (and its optional preparation `variants`)
+ * using the two-tier Hybrid LLM-to-Database Pipeline.
  */
 export async function resolveFoodItem(
   item: ParsedMealItem,
@@ -185,17 +360,15 @@ export async function resolveFoodItem(
       item.variants.map(async (variant) => {
         const normName = variant.normalized_name.trim().toLowerCase();
         const dispName = variant.display_name.trim();
-        const { food, fromCache } = await resolveSingleFoodRowDeduped(
-          variant.macros_per_100g,
+        const nutrients = await resolveSingleNutrientsDeduped(
+          normName,
           normName,
           dispName,
+          undefined,
+          variant.macros_per_100g,
           deps
         );
-        const base = toResolvedMealItem(
-          food,
-          fromCache ? food.display_name : dispName,
-          variant.quantity_g
-        );
+        const base = toResolvedMealItem(nutrients, dispName, variant.quantity_g);
         return {
           ...base,
           state: variant.state,
@@ -228,19 +401,18 @@ export async function resolveFoodItem(
 
   const normalizedName = item.normalized_name.trim().toLowerCase();
   const displayName = item.display_name.trim();
+  const searchQuery = item.normalized_query || normalizedName;
 
-  const { food, fromCache } = await resolveSingleFoodRowDeduped(
-    item.estimated_macros_per_100g,
+  const nutrients = await resolveSingleNutrientsDeduped(
+    searchQuery,
     normalizedName,
     displayName,
+    item.candidate_ingredients,
+    item.estimated_macros_per_100g,
     deps
   );
 
-  return toResolvedMealItem(
-    food,
-    fromCache ? food.display_name : displayName,
-    item.quantity_g
-  );
+  return toResolvedMealItem(nutrients, displayName, item.quantity_g);
 }
 
 interface ParsedSimpleSegment {
@@ -342,15 +514,24 @@ function parseSimpleMealSegment(segment: string): ParsedSimpleSegment | null {
   };
 }
 
+export interface CachedCandidateFood {
+  id: string;
+  normalized_name: string;
+  display_name: string;
+  calories_per_100g: number;
+  protein_per_100g: number;
+  carbs_per_100g: number;
+  fat_per_100g: number;
+  is_estimated?: boolean;
+}
+
 /**
- * Attempts to resolve a meal description directly from the `foods` cache before calling Gemini.
- * Returns `ResolvedMealItem[]` if every segment in `text` is a clean `<quantity> <unit?> <food>`
- * phrase whose nutrition (including both `dry`/`raw` and `cooked` variants when applicable) is already cached in `foods`.
- * Returns `null` if any segment cannot be resolved from cache so the caller falls back to `AIProvider.parseMealText()`.
+ * Attempts to resolve clean segments directly from cache (0 Gemini calls)
  */
 export async function tryResolveMealTextFromCache(
   text: string,
-  supabase: SupabaseClient<Database>
+  supabase?: SupabaseClient<Database>,
+  foodDbClient?: SupabaseClient
 ): Promise<ResolvedMealItem[] | null> {
   const rawSegments = text
     .trim()
@@ -380,16 +561,64 @@ export async function tryResolveMealTextFromCache(
   }
 
   const candidateNames = Array.from(candidateNamesSet);
-  const { data: rows, error } = await supabase
-    .from("foods")
-    .select("*")
-    .in("normalized_name", candidateNames);
+  let rows: CachedCandidateFood[] | null = null;
 
-  if (error || !rows) {
+  try {
+    const client =
+      foodDbClient ??
+      (supabase ? (supabase as unknown as SupabaseClient) : createFoodReferenceClient());
+    const { data, error } = await client
+      .from("reference_foods")
+      .select(
+        "id, normalized_name, display_name, calories_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g, is_estimated"
+      )
+      .in("normalized_name", candidateNames);
+
+    if (!error && data && data.length > 0) {
+      rows = data.map((r) => ({
+        id: String(r.id),
+        normalized_name: String(r.normalized_name),
+        display_name: String(r.display_name),
+        calories_per_100g: Number(r.calories_per_100g),
+        protein_per_100g: Number(r.protein_per_100g),
+        carbs_per_100g: Number(r.carbs_per_100g),
+        fat_per_100g: Number(r.fat_per_100g),
+        is_estimated: Boolean(r.is_estimated),
+      }));
+    }
+  } catch {
+    // Reference foods lookup failed or unavailable
+  }
+
+  if ((!rows || rows.length === 0) && supabase) {
+    try {
+      const { data, error } = await supabase
+        .from("foods")
+        .select("*")
+        .in("normalized_name", candidateNames);
+
+      if (!error && data && data.length > 0) {
+        rows = data.map((r) => ({
+          id: r.id,
+          normalized_name: r.normalized_name,
+          display_name: r.display_name,
+          calories_per_100g: Number(r.calories_per_100g),
+          protein_per_100g: Number(r.protein_per_100g),
+          carbs_per_100g: Number(r.carbs_per_100g),
+          fat_per_100g: Number(r.fat_per_100g),
+          is_estimated: Boolean(r.is_estimated),
+        }));
+      }
+    } catch {
+      // Legacy foods table may not exist
+    }
+  }
+
+  if (!rows || rows.length === 0) {
     return null;
   }
 
-  const byNormalizedName = new Map<string, FoodRow>();
+  const byNormalizedName = new Map<string, CachedCandidateFood>();
   for (const row of rows) {
     if (candidateNamesSet.has(row.normalized_name)) {
       byNormalizedName.set(row.normalized_name, row);
@@ -403,7 +632,7 @@ export async function tryResolveMealTextFromCache(
   const resolvedItems: ResolvedMealItem[] = [];
 
   for (const seg of parsedSegments) {
-    const findRow = (suffix?: string): FoodRow | undefined => {
+    const findRow = (suffix?: string): CachedCandidateFood | undefined => {
       for (const b of seg.bases) {
         const key = suffix ? `${b}, ${suffix}` : b;
         const found = byNormalizedName.get(key);
@@ -435,10 +664,8 @@ export async function tryResolveMealTextFromCache(
     const uncookedState: PreparationState = dryRow ? "dry" : "raw";
     const uncookedLabel = dryRow ? "Dry" : "Raw";
 
-    // Dual-variant cached food (e.g. "oats, dry" + "oats, cooked")
     if (uncookedRow && cookedRow) {
       if (!isExactMassUnit(seg.unit)) {
-        // Volume units like "1 cup oats" have distinct dry vs cooked gram weights; let Gemini supply them
         return null;
       }
       const vUncooked: ResolvedMealVariant = {
@@ -478,12 +705,10 @@ export async function tryResolveMealTextFromCache(
       continue;
     }
 
-    // If only an uncooked row exists without its cooked counterpart, let Gemini populate both variants
     if (uncookedRow && !cookedRow) {
       return null;
     }
 
-    // If a dry pantry staple only has a cooked row without its dry counterpart, let Gemini populate both
     if (cookedRow && !uncookedRow && isDryPantryStaple(seg.bases[0] ?? "")) {
       return null;
     }
@@ -500,4 +725,3 @@ export async function tryResolveMealTextFromCache(
 
   return resolvedItems;
 }
-

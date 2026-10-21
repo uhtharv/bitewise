@@ -17,6 +17,16 @@ export const envSchema = z.object({
   NEXT_PUBLIC_SUPABASE_ANON_KEY: requiredEnvString(
     "NEXT_PUBLIC_SUPABASE_ANON_KEY"
   ),
+  FOOD_DATABASE_URL: z
+    .string()
+    .trim()
+    .min(1, "Environment variable FOOD_DATABASE_URL must not be empty")
+    .optional(),
+  FOOD_DATABASE_ANON_KEY: z
+    .string()
+    .trim()
+    .min(1, "Environment variable FOOD_DATABASE_ANON_KEY must not be empty")
+    .optional(),
   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: requiredEnvString(
     "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"
   ),

@@ -11,6 +11,12 @@ export interface MacroPer100g {
   is_estimated?: boolean;
 }
 
+export interface CandidateIngredient {
+  name: string;
+  normalized_query: string;
+  quantity_g: number;
+}
+
 export interface ParsedMealVariant {
   state: PreparationState;
   label: string;
@@ -26,6 +32,9 @@ export interface ParsedMealItem {
   quantity_g: number;
   quantity?: number;
   unit?: string;
+  normalized_query?: string;
+  is_composite?: boolean;
+  candidate_ingredients?: CandidateIngredient[];
   estimated_macros_per_100g?: MacroPer100g;
   selected_state?: PreparationState;
   variants?: ParsedMealVariant[];
@@ -182,9 +191,18 @@ const rawParsedVariantSchema = z.object({
   macros_per_100g: macroPer100gSchema,
 });
 
+const candidateIngredientSchema = z.object({
+  name: z.string().trim().min(1),
+  normalized_query: z.string().trim().min(1),
+  quantity_g: z.number().positive(),
+});
+
 const rawParsedItemSchema = z.object({
   normalized_name: z.string().trim().min(1),
   display_name: z.string().trim().min(1),
+  normalized_query: z.string().trim().min(1).optional(),
+  is_composite: z.boolean().optional(),
+  candidate_ingredients: z.array(candidateIngredientSchema).optional(),
   quantity: z.number().positive().optional(),
   unit: z.string().trim().min(1).optional(),
   quantity_g: z.number().positive().optional(),
@@ -193,9 +211,18 @@ const rawParsedItemSchema = z.object({
   variants: z.array(rawParsedVariantSchema).optional(),
 });
 
-export const parsedMealResponseSchema = z.object({
-  items: z.array(rawParsedItemSchema),
-});
+export const parsedMealResponseSchema = z.union([
+  z.object({
+    items: z.array(rawParsedItemSchema),
+  }),
+  z
+    .object({
+      foods: z.array(rawParsedItemSchema),
+    })
+    .transform((val) => ({ items: val.foods })),
+  z.array(rawParsedItemSchema).transform((items) => ({ items })),
+]);
+
 
 const DEFAULT_STATE_LABELS: Record<PreparationState, string> = {
   dry: "Dry",
@@ -454,8 +481,12 @@ export class GeminiProvider implements AIProvider {
   async parseMealText(text: string): Promise<ParsedMealItem[]> {
     const prompt = [
       "Parse the following meal description (English, Indian/regional dish names, or Hinglish) into individual food items.",
-      "Rules for normalized_name:",
+      "Rules for normalized_name & normalized_query:",
       "- Use a lowercase canonical food name that explicitly includes preparation state ('dry', 'raw', or 'cooked') for grains, oats, rice, lentils, pasta, and meats (e.g., 'oats, dry', 'oats, cooked', 'white rice, cooked', 'dal tadka').",
+      "- In `normalized_query`, provide an optimal search query string for matching against USDA / IFCT / Open Food Facts food reference catalogs (e.g., 'rolled oats raw', 'boiled chicken breast', 'whole wheat roti chapati', 'cooked lentils dal tadka').",
+      "Rules for composite dishes & predictive deconstruction:",
+      "- For composite dishes, multi-ingredient cooked preparations, or home recipes (e.g., dal tadka, chicken curry, paneer butter masala, sandwich): set `is_composite: true`, and provide `candidate_ingredients` breaking the dish into 2-5 base single-ingredient staples with approximate gram portions totaling the dish weight (e.g. for 150g dal tadka: yellow lentils raw 35g, onion 25g, tomato 25g, ghee 5g).",
+      "- For single-ingredient staples (e.g., boiled egg, banana, raw oats, milk): set `is_composite: false` and omit `candidate_ingredients`.",
       "Rules for ambiguous preparation state (variants):",
       "- If a food has distinct 'dry'/'raw' vs 'cooked' nutritional profiles (e.g., oats, rice, pasta, lentils/dal, chicken breast, meat, fish, soya chunks) AND the user did NOT explicitly write 'dry', 'raw', 'uncooked', or 'cooked' in the meal text:",
       "  - Populate `variants` with 2 entries: one for 'dry' (or 'raw' for meats/vegetables/rice) and one for 'cooked'.",
@@ -472,10 +503,10 @@ export class GeminiProvider implements AIProvider {
       "  - 1 tbsp = 15g",
       "  - 1 tsp = 5g",
       "Rules for estimated_macros_per_100g / macros_per_100g:",
-      "- Provide accurate macros strictly per 100g (never for the total serving): calories_per_100g (must equal ~4*protein + 4*carbs + 9*fat, max 900), protein_per_100g, carbs_per_100g, fat_per_100g (sum of protein + carbs + fat <= 100g).",
+      "- Provide accurate emergency fallback macros strictly per 100g (never for total serving): calories_per_100g (must equal ~4*protein + 4*carbs + 9*fat, max 900), protein_per_100g, carbs_per_100g, fat_per_100g (sum of protein + carbs + fat <= 100g).",
       "- Set is_estimated: false for standard single-ingredient staples with well-known reference values (e.g., oats, eggs, plain rice, chicken breast, milk, banana, curd/yogurt).",
       "- Set is_estimated: true for prepared/composite dishes and recipes whose macros vary by preparation (e.g., dal tadka, paneer butter masala, biryani, sandwich).",
-      'Return JSON matching: { "items": [{ "normalized_name": string, "display_name": string, "quantity": number, "unit": string, "quantity_g": number, "estimated_macros_per_100g": { "calories_per_100g": number, "protein_per_100g": number, "carbs_per_100g": number, "fat_per_100g": number, "is_estimated": boolean }, "selected_state"?: "dry" | "raw" | "cooked", "variants"?: [{ "state": "dry" | "raw" | "cooked", "label": string, "normalized_name": string, "display_name": string, "quantity_g": number, "macros_per_100g": { "calories_per_100g": number, "protein_per_100g": number, "carbs_per_100g": number, "fat_per_100g": number, "is_estimated": boolean } }] }] }.',
+      'Return JSON matching: { "items": [{ "normalized_name": string, "display_name": string, "normalized_query"?: string, "is_composite"?: boolean, "candidate_ingredients"?: [{ "name": string, "normalized_query": string, "quantity_g": number }], "quantity": number, "unit": string, "quantity_g": number, "estimated_macros_per_100g"?: { "calories_per_100g": number, "protein_per_100g": number, "carbs_per_100g": number, "fat_per_100g": number, "is_estimated": boolean }, "selected_state"?: "dry" | "raw" | "cooked", "variants"?: [{ "state": "dry" | "raw" | "cooked", "label": string, "normalized_name": string, "display_name": string, "quantity_g": number, "macros_per_100g": { "calories_per_100g": number, "protein_per_100g": number, "carbs_per_100g": number, "fat_per_100g": number, "is_estimated": boolean } }] }] }.',
       `Meal text: ${text}`,
     ].join("\n");
 
@@ -494,9 +525,15 @@ export class GeminiProvider implements AIProvider {
       );
     }
 
+    const cleanedText = response.text
+      .trim()
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+
     let parsedJson: unknown;
     try {
-      parsedJson = JSON.parse(response.text);
+      parsedJson = JSON.parse(cleanedText);
     } catch {
       throw new UnparseableMealError(
         "Gemini returned invalid JSON while parsing meal"
@@ -536,6 +573,21 @@ export class GeminiProvider implements AIProvider {
         unit,
         quantity_g: quantityG,
       };
+      if (item.normalized_query) {
+        parsedItem.normalized_query = item.normalized_query.trim();
+      }
+      if (item.is_composite) {
+        parsedItem.is_composite = true;
+      }
+      if (item.candidate_ingredients && item.candidate_ingredients.length > 0) {
+        parsedItem.candidate_ingredients = item.candidate_ingredients.map(
+          (c) => ({
+            name: c.name.trim(),
+            normalized_query: c.normalized_query.trim().toLowerCase(),
+            quantity_g: c.quantity_g,
+          })
+        );
+      }
       if (item.estimated_macros_per_100g) {
         parsedItem.estimated_macros_per_100g = item.estimated_macros_per_100g;
       }

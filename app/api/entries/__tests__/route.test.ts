@@ -234,6 +234,58 @@ describe("06 — Meal Entries CRUD API (/api/entries & /api/entries/:id)", () =>
     });
   });
 
+  it("POST /api/entries sanitizes non-UUID food_id strings (deconstructed-* and fallback-*) to null to prevent Postgres 22P02 errors", async () => {
+    mockRequireAuth.mockResolvedValueOnce("user_a");
+    const { createUserSupabaseClient } = await import("@/lib/supabase/user");
+    const { handleCreateEntries } = await import("@/app/api/entries/route");
+
+    const dbHarness = createMockEntriesRlsFetch();
+    const userClient = createUserSupabaseClient({
+      accessToken: async () => createMockClerkJwt("user_a"),
+      fetch: dbHarness.mockFetch,
+    });
+
+    const req = new Request("https://example.com/api/entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        logged_on: "2026-10-10",
+        meal_type: "dinner",
+        items: [
+          {
+            food_id: "deconstructed-yellow-lentils",
+            food_name: "Grandma's Dal",
+            quantity_g: 200,
+            calories: 250,
+            protein_g: 12,
+            carbs_g: 35,
+            fat_g: 5,
+            is_estimated: false,
+          },
+          {
+            food_id: "fallback-unknown-snack",
+            food_name: "Unknown Snack",
+            quantity_g: 100,
+            calories: 180,
+            protein_g: 6,
+            carbs_g: 20,
+            fat_g: 8,
+            is_estimated: true,
+          },
+        ],
+      }),
+    });
+
+    const res = await handleCreateEntries(req, { supabase: userClient });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { entries: MealEntryRow[] };
+    expect(body.entries).toHaveLength(2);
+    expect(body.entries[0].food_id).toBeNull();
+    expect(body.entries[0].food_name).toBe("Grandma's Dal");
+    expect(body.entries[1].food_id).toBeNull();
+    expect(body.entries[1].food_name).toBe("Unknown Snack");
+  });
+
   it("PATCH /api/entries/:id rescales from linked foods per-100g macros (preventing small-quantity zero-locking and compound drift) and falls back to ratio scaling when food_id is null", async () => {
     mockRequireAuth.mockResolvedValue("user_a");
     const { createUserSupabaseClient } = await import("@/lib/supabase/user");

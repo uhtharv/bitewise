@@ -52,4 +52,19 @@ describe("lib/env", () => {
       await expect(import("@/lib/env")).rejects.toThrow(new RegExp(key));
     }
   );
+
+  it("accepts valid FOOD_DATABASE_URL and FOOD_DATABASE_ANON_KEY when provided", async () => {
+    process.env.FOOD_DATABASE_URL = "https://food-ref.supabase.co";
+    process.env.FOOD_DATABASE_ANON_KEY = "food-ref-anon-key";
+
+    const { env } = await import("@/lib/env");
+    expect(env.FOOD_DATABASE_URL).toBe("https://food-ref.supabase.co");
+    expect(env.FOOD_DATABASE_ANON_KEY).toBe("food-ref-anon-key");
+  });
+
+  it("throws when FOOD_DATABASE_URL is provided as empty whitespace", async () => {
+    process.env.FOOD_DATABASE_URL = "   ";
+
+    await expect(import("@/lib/env")).rejects.toThrow(/FOOD_DATABASE_URL/);
+  });
 });

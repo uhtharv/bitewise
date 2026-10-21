@@ -5,7 +5,6 @@ import { requireAuth } from "@/lib/auth";
 import {
   createUserSupabaseClient,
   type Database,
-  type FoodRow,
 } from "@/lib/supabase/user";
 
 const entryIdSchema = z.string().uuid();
@@ -28,15 +27,6 @@ function errorResponse(
 
 function scaleFromPer100g(per100g: number, quantityG: number): number {
   return Math.round(((per100g * quantityG) / 100) * 10) / 10;
-}
-
-function rescaleMacroFallback(
-  oldMacro: number,
-  oldQuantityG: number,
-  newQuantityG: number
-): number {
-  const per100gMacro = (oldMacro * 100) / oldQuantityG;
-  return scaleFromPer100g(per100gMacro, newQuantityG);
 }
 
 export async function handlePatchEntry(
@@ -78,6 +68,7 @@ export async function handlePatchEntry(
     .eq("id", parsedId.data);
 
   if (selectError) {
+    console.error("[PATCH /api/entries/:id] Select error:", selectError);
     return errorResponse(
       502,
       "UPSTREAM_ERROR",
@@ -93,46 +84,55 @@ export async function handlePatchEntry(
   const oldQuantityG = Number(existing.quantity_g);
   const newQuantityG = parsedBody.data.quantity_g;
 
-  let linkedFood: FoodRow | null = null;
-  if (existing.food_id) {
-    const { data: foodRows } = await supabase
-      .from("foods")
-      .select("*")
-      .eq("id", existing.food_id);
+  let per100Calories =
+    existing.calories_per_100g != null
+      ? Number(existing.calories_per_100g)
+      : null;
+  let per100Protein =
+    existing.protein_per_100g != null
+      ? Number(existing.protein_per_100g)
+      : null;
+  let per100Carbs =
+    existing.carbs_per_100g != null
+      ? Number(existing.carbs_per_100g)
+      : null;
+  let per100Fat =
+    existing.fat_per_100g != null
+      ? Number(existing.fat_per_100g)
+      : null;
 
-    if (foodRows && foodRows.length > 0) {
-      linkedFood = foodRows[0];
+  if (per100Calories == null && existing.food_id) {
+    try {
+      const { data: foodRows } = await supabase
+        .from("foods")
+        .select("*")
+        .eq("id", existing.food_id);
+
+      if (foodRows && foodRows.length > 0) {
+        const food = foodRows[0];
+        per100Calories = Number(food.calories_per_100g);
+        per100Protein = Number(food.protein_per_100g);
+        per100Carbs = Number(food.carbs_per_100g);
+        per100Fat = Number(food.fat_per_100g);
+      }
+    } catch {
+      // Legacy table may not exist
     }
   }
 
-  const nextCalories = linkedFood
-    ? scaleFromPer100g(Number(linkedFood.calories_per_100g), newQuantityG)
-    : rescaleMacroFallback(
-        Number(existing.calories),
-        oldQuantityG,
-        newQuantityG
-      );
-  const nextProteinG = linkedFood
-    ? scaleFromPer100g(Number(linkedFood.protein_per_100g), newQuantityG)
-    : rescaleMacroFallback(
-        Number(existing.protein_g),
-        oldQuantityG,
-        newQuantityG
-      );
-  const nextCarbsG = linkedFood
-    ? scaleFromPer100g(Number(linkedFood.carbs_per_100g), newQuantityG)
-    : rescaleMacroFallback(
-        Number(existing.carbs_g),
-        oldQuantityG,
-        newQuantityG
-      );
-  const nextFatG = linkedFood
-    ? scaleFromPer100g(Number(linkedFood.fat_per_100g), newQuantityG)
-    : rescaleMacroFallback(
-        Number(existing.fat_g),
-        oldQuantityG,
-        newQuantityG
-      );
+  const resolvedCalPer100 =
+    per100Calories ?? (Number(existing.calories) * 100) / oldQuantityG;
+  const resolvedProtPer100 =
+    per100Protein ?? (Number(existing.protein_g) * 100) / oldQuantityG;
+  const resolvedCarbPer100 =
+    per100Carbs ?? (Number(existing.carbs_g) * 100) / oldQuantityG;
+  const resolvedFatPer100 =
+    per100Fat ?? (Number(existing.fat_g) * 100) / oldQuantityG;
+
+  const nextCalories = scaleFromPer100g(resolvedCalPer100, newQuantityG);
+  const nextProteinG = scaleFromPer100g(resolvedProtPer100, newQuantityG);
+  const nextCarbsG = scaleFromPer100g(resolvedCarbPer100, newQuantityG);
+  const nextFatG = scaleFromPer100g(resolvedFatPer100, newQuantityG);
 
   const { data: updatedRows, error: updateError } = await supabase
     .from("meal_entries")
@@ -142,11 +142,16 @@ export async function handlePatchEntry(
       protein_g: nextProteinG,
       carbs_g: nextCarbsG,
       fat_g: nextFatG,
+      calories_per_100g: Math.round(resolvedCalPer100 * 10) / 10,
+      protein_per_100g: Math.round(resolvedProtPer100 * 10) / 10,
+      carbs_per_100g: Math.round(resolvedCarbPer100 * 10) / 10,
+      fat_per_100g: Math.round(resolvedFatPer100 * 10) / 10,
     })
     .eq("id", parsedId.data)
     .select("*");
 
   if (updateError) {
+    console.error("[PATCH /api/entries/:id] Update error:", updateError);
     return errorResponse(
       502,
       "UPSTREAM_ERROR",
@@ -184,6 +189,7 @@ export async function handleDeleteEntry(
     .select("*");
 
   if (deleteError) {
+    console.error("[DELETE /api/entries/:id] Delete error:", deleteError);
     return errorResponse(
       502,
       "UPSTREAM_ERROR",

@@ -25,11 +25,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { PreparationState } from "@/lib/ai/provider";
 import {
-  analyzeMeal,
+  analyzeMealStream,
   ApiClientError,
   createEntries,
   getUserSettings,
   mapStatusToUserMessage,
+  type DailySummaryResponse,
 } from "@/lib/api/client";
 import {
   getDefaultMealType,
@@ -398,7 +399,20 @@ export function MealAnalyzer() {
     : getDefaultMealType(activeTimezone, now);
 
   const analyzeMutation = useMutation({
-    mutationFn: (text: string) => analyzeMeal(text),
+    mutationFn: async (text: string) => {
+      setItems([]);
+      return analyzeMealStream(text, (streamedItem) => {
+        setItems((prev) => {
+          const exists = prev.some(
+            (p) =>
+              p.food_id === streamedItem.food_id &&
+              p.food_name === streamedItem.food_name
+          );
+          if (exists) return prev;
+          return [...prev, ...toEditableAnalyzedItems([streamedItem])];
+        });
+      });
+    },
     onSuccess: (response) => {
       setItems(toEditableAnalyzedItems(response.items));
       if (!hasCustomMealType) {
@@ -419,12 +433,87 @@ export function MealAnalyzer() {
       }
       return createEntries(payload);
     },
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ["summary", todayDate] });
+      const previousSummary = queryClient.getQueryData<DailySummaryResponse>([
+        "summary",
+        todayDate,
+      ]);
+
+      if (previousSummary) {
+        const optimisticEntries = items.map((item, idx) => ({
+          id: `optimistic-${Date.now()}-${idx}`,
+          user_id: "current",
+          logged_on: todayDate,
+          meal_type: effectiveMealType,
+          food_id: item.food_id || null,
+          food_name: item.food_name,
+          quantity_g: item.quantity_g,
+          calories: item.calories,
+          protein_g: item.protein_g,
+          carbs_g: item.carbs_g,
+          fat_g: item.fat_g,
+          calories_per_100g: item.calories_per_100g,
+          protein_per_100g: item.protein_per_100g,
+          carbs_per_100g: item.carbs_per_100g,
+          fat_per_100g: item.fat_per_100g,
+          is_estimated: item.is_estimated,
+          created_at: new Date().toISOString(),
+        }));
+
+        queryClient.setQueryData<DailySummaryResponse>(
+          ["summary", todayDate],
+          {
+            ...previousSummary,
+            entries: [...previousSummary.entries, ...optimisticEntries],
+            totals: {
+              calories:
+                Math.round(
+                  (previousSummary.totals.calories +
+                    items.reduce((s, i) => s + i.calories, 0)) *
+                    10
+                ) / 10,
+              protein_g:
+                Math.round(
+                  (previousSummary.totals.protein_g +
+                    items.reduce((s, i) => s + i.protein_g, 0)) *
+                    10
+                ) / 10,
+              carbs_g:
+                Math.round(
+                  (previousSummary.totals.carbs_g +
+                    items.reduce((s, i) => s + i.carbs_g, 0)) *
+                    10
+                ) / 10,
+              fat_g:
+                Math.round(
+                  (previousSummary.totals.fat_g +
+                    items.reduce((s, i) => s + i.fat_g, 0)) *
+                    10
+                ) / 10,
+            },
+          }
+        );
+      }
+
+      return { previousSummary };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previousSummary) {
+        queryClient.setQueryData(
+          ["summary", todayDate],
+          context.previousSummary
+        );
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["summary", todayDate] });
+      void queryClient.invalidateQueries({ queryKey: ["summary"] });
+    },
     onSuccess: () => {
       setItems([]);
       setMealText("");
       setHasCustomMealType(false);
-      void queryClient.invalidateQueries({ queryKey: ["summary", todayDate] });
-      void queryClient.invalidateQueries({ queryKey: ["summary"] });
       toast.success("Added to today's log");
     },
   });

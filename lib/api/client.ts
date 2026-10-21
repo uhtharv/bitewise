@@ -56,7 +56,13 @@ export const BACKEND_ERROR_MESSAGES: Record<number, string> = {
   502: "Food data is unavailable right now. Try again shortly.",
 };
 
-export function mapStatusToUserMessage(status: number): string {
+export function mapStatusToUserMessage(
+  status: number,
+  code?: string | null
+): string {
+  if (code === "GUEST_LIMIT_REACHED") {
+    return "You've used all 3 free guest analyses for today. Sign in with Google to continue.";
+  }
   if (status in BACKEND_ERROR_MESSAGES) {
     return BACKEND_ERROR_MESSAGES[status];
   }
@@ -65,13 +71,15 @@ export function mapStatusToUserMessage(status: number): string {
 
 export class ApiClientError extends Error {
   public readonly status: number;
+  public readonly code: string | null;
   public readonly userMessage: string;
 
-  constructor(status: number, userMessage?: string) {
-    const mapped = userMessage ?? mapStatusToUserMessage(status);
+  constructor(status: number, userMessage?: string, code?: string | null) {
+    const mapped = userMessage ?? mapStatusToUserMessage(status, code);
     super(mapped);
     this.name = "ApiClientError";
     this.status = status;
+    this.code = code ?? null;
     this.userMessage = mapped;
   }
 }
@@ -86,6 +94,20 @@ function defaultOnUnauthorized(): void {
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = "/sign-in";
   }
+}
+
+async function parseErrorResponse(response: Response): Promise<ApiClientError> {
+  let parsedError: { error?: { code?: string; message?: string } } | null = null;
+  try {
+    parsedError = (await response.json()) as {
+      error?: { code?: string; message?: string };
+    };
+  } catch {
+    // ignore json error parse failure
+  }
+  const code = parsedError?.error?.code ?? null;
+  const safeMessage = mapStatusToUserMessage(response.status, code);
+  return new ApiClientError(response.status, safeMessage, code);
 }
 
 async function requestJson<T>(
@@ -115,7 +137,7 @@ async function requestJson<T>(
   }
 
   if (!response.ok) {
-    throw new ApiClientError(response.status);
+    throw await parseErrorResponse(response);
   }
 
   return (await response.json()) as T;
@@ -163,7 +185,7 @@ export async function analyzeMealStream(
   }
 
   if (!response.ok) {
-    throw new ApiClientError(response.status);
+    throw await parseErrorResponse(response);
   }
 
   const contentType = response.headers.get("content-type") || "";

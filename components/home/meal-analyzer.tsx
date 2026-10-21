@@ -1,9 +1,14 @@
 "use client";
 
+import { useAuth } from "@clerk/nextjs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2Icon, SparklesIcon, Trash2Icon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import {
+  GuestSignInDialog,
+  type GuestSignInMode,
+} from "@/components/auth/guest-sign-in-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -377,26 +382,64 @@ export function MealAnalyzerFallback() {
 
 export function MealAnalyzer() {
   const queryClient = useQueryClient();
+  const { isSignedIn } = useAuth();
   const [now] = useState(() => new Date());
+
+  const [guestDialogOpen, setGuestDialogOpen] = useState(false);
+  const [guestDialogMode, setGuestDialogMode] =
+    useState<GuestSignInMode>("limit");
 
   const { data: settingsData } = useQuery({
     queryKey: ["settings"],
     queryFn: () => getUserSettings(),
+    enabled: Boolean(isSignedIn),
   });
 
   const activeTimezone = resolveActiveTimezone(settingsData?.settings);
   const todayDate = getTodayInTimezone(activeTimezone, now);
 
-  const [mealText, setMealText] = useState("");
-  const [items, setItems] = useState<EditableAnalyzedItem[]>([]);
-  const [mealType, setMealType] = useState<MealType>(() =>
-    getDefaultMealType(activeTimezone, now)
+  const [restoredDraft] = useState(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = sessionStorage.getItem("bw_pending_meal");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
+          sessionStorage.removeItem("bw_pending_meal");
+          return parsed as {
+            items: EditableAnalyzedItem[];
+            mealType?: MealType;
+            mealText?: string;
+          };
+        }
+      }
+    } catch {
+      // ignore sessionStorage read error
+    }
+    return null;
+  });
+
+  const [mealText, setMealText] = useState(() => restoredDraft?.mealText ?? "");
+  const [items, setItems] = useState<EditableAnalyzedItem[]>(
+    () => restoredDraft?.items ?? []
   );
-  const [hasCustomMealType, setHasCustomMealType] = useState(false);
+  const [mealType, setMealType] = useState<MealType>(
+    () =>
+      restoredDraft?.mealType ?? getDefaultMealType(activeTimezone, now)
+  );
+  const [hasCustomMealType, setHasCustomMealType] = useState(() =>
+    Boolean(restoredDraft?.mealType)
+  );
 
   const effectiveMealType = hasCustomMealType
     ? mealType
     : getDefaultMealType(activeTimezone, now);
+
+  useEffect(() => {
+    if (restoredDraft && restoredDraft.items.length > 0) {
+      toast.info("Restored your analyzed meal. Ready to add to today's log!");
+    }
+  }, [restoredDraft]);
 
   const analyzeMutation = useMutation({
     mutationFn: async (text: string) => {
@@ -417,6 +460,12 @@ export function MealAnalyzer() {
       setItems(toEditableAnalyzedItems(response.items));
       if (!hasCustomMealType) {
         setMealType(getDefaultMealType(activeTimezone, new Date()));
+      }
+    },
+    onError: (err) => {
+      if (err instanceof ApiClientError && err.code === "GUEST_LIMIT_REACHED") {
+        setGuestDialogMode("limit");
+        setGuestDialogOpen(true);
       }
     },
   });
@@ -514,6 +563,11 @@ export function MealAnalyzer() {
       setItems([]);
       setMealText("");
       setHasCustomMealType(false);
+      try {
+        sessionStorage.removeItem("bw_pending_meal");
+      } catch {
+        // ignore
+      }
       toast.success("Added to today's log");
     },
   });
@@ -630,10 +684,34 @@ export function MealAnalyzer() {
           }
         }}
         onSaveEntries={() => {
+          if (!isSignedIn) {
+            try {
+              sessionStorage.setItem(
+                "bw_pending_meal",
+                JSON.stringify({
+                  items,
+                  mealType: effectiveMealType,
+                  mealText,
+                })
+              );
+            } catch {
+              // ignore
+            }
+            setGuestDialogMode("save");
+            setGuestDialogOpen(true);
+            return;
+          }
+
           if (canSubmitAnalyzedItems(items) && !saveMutation.isPending) {
             saveMutation.mutate();
           }
         }}
+      />
+
+      <GuestSignInDialog
+        open={guestDialogOpen}
+        onOpenChange={setGuestDialogOpen}
+        mode={guestDialogMode}
       />
     </div>
   );

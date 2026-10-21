@@ -22,17 +22,20 @@
 The owner specified a sign-in step, a simple home where you type what you ate, and a daily meal tracker. The route names and the split between screens below are proposed.
 
 ### S1. Sign-in & Sign-up (route `/sign-in/[[...sign-in]]`)
-- Custom Bitewise-styled authentication card supporting **Sign in** and **Create account** modes with Google OAuth only (`strategy: "oauth_google"`), plus `/sign-in/sso-callback` (`HandleSSOCallback`). Signed-out visitors are redirected here from any other route.
+- Custom Bitewise-styled authentication card supporting **Sign in** and **Create account** modes with Google OAuth only (`strategy: "oauth_google"`), plus `/sign-in/sso-callback` (`HandleSSOCallback`). Signed-out visitors are redirected here when accessing protected routes (`/today`, `/settings`).
 - After sign-in or sign-up, redirect to the sanitized `redirect_url` (defaulting to Home `/`).
 
 ### S2. Home (route `/`)
+- Publicly accessible to unauthenticated guests for up to 3 analyses per day, and signed-in users for up to 30 analyses per day.
 - A multi-line text input with placeholder text such as "What did you eat?". Accepts English as well as regional/Indian dish names and Hinglish.
 - An **Analyze** button. Disabled while empty or while loading.
+- No upfront counter is shown. If a guest reaches their 3-analysis daily limit and attempts another analysis, an in-context **Sign In Modal** dialog opens prompting them to sign in with Google to unlock 30 analyses per day.
 - Results list: one row per item with name, editable quantity in grams (`quantity_g`), calories, protein, carbs, fat, a per-row **Remove** button to drop an unwanted item before saving, an **Estimated** badge (`canvas-soft` `#e8ebe6` pill with `ink` `#0e0f0c` text) when `is_estimated` is true, and an inline segmented toggle of `Button` pills (e.g., `Dry` / `Cooked` or `Raw` / `Cooked`) when the analyzed item has preparation `variants`. Switching variants updates the item's `food_id`, `food_name`, `is_estimated`, and per-100g macros, and switches `quantity_g` to the variant's default `quantity_g` unless the user has manually edited the Grams input (in which case their custom `quantity_g` is preserved and rescaled). Editing `quantity_g` rescales the item's macros proportionally on the client **[LOCKED]**.
 - Meal type selector (`breakfast`, `lunch`, `dinner`, `snack`), auto-selected based on local time of day (`05:00–10:59` breakfast, `11:00–15:59` lunch, `16:00–18:59` snack, `19:00–04:59` dinner) **[LOCKED]**.
 - Date (`logged_on`) is automatically set to today (`YYYY-MM-DD`) in the user's active timezone with no date picker UI **[LOCKED]**.
 - An **Add to today's log** button (disabled if any remaining item has an empty or `<= 0` `quantity_g`, with an inline hint). Nothing is saved until this is pressed **[LOCKED]**.
-- After a successful add, clear the results, invalidate the `['summary', date]` query cache, and confirm with a toast.
+- For unauthenticated guests clicking **Add to today's log**: an in-context **Sign In Modal** dialog opens explaining that saving meals to the daily log and tracking goals requires an account. The current analyzed items and selected meal type are stored in `sessionStorage` so after completing Google sign-in, the user returns to Home with their analyzed meal restored and ready to add immediately.
+- After a successful add, clear the results, clear any temporary draft in `sessionStorage`, invalidate the `['summary', date]` query cache, and confirm with a toast.
 
 ### S3. Daily tracker (route `/today`)
 - Automatically displays today's date (`YYYY-MM-DD` in the user's active timezone) with no date picker UI **[LOCKED]**.
@@ -78,7 +81,7 @@ Every screen implements all four.
 | 400 | Invalid input | "Please check what you entered." |
 | 401 | Not signed in | Redirect to `/sign-in` |
 | 422 | AI output could not be parsed | "Couldn't understand that meal. Try rephrasing." |
-| 429 | Daily analyze limit reached | "You've hit today's analysis limit. Try again tomorrow." |
+| 429 | Daily analyze limit reached | "You've hit today's analysis limit. Try again tomorrow." (For guests: "You've used all 3 free guest analyses for today. Sign in with Google to continue.") |
 | 502 | Upstream service failed | "Food data is unavailable right now. Try again shortly." |
 
 ## 6. Data contract

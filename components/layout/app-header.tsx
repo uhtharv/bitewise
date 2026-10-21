@@ -12,7 +12,7 @@ const NAV_ITEMS = [
   { href: "/settings", label: "Settings" },
 ] as const;
 
-function AppHeaderContent() {
+export function AppHeaderContent() {
   const pathname = usePathname();
 
   if (pathname?.startsWith("/sign-in")) {
@@ -44,10 +44,10 @@ function AppHeaderContent() {
                   href={item.href}
                   aria-current={isActive ? "page" : undefined}
                   className={cn(
-                    "inline-flex min-h-11 items-center justify-center rounded-xl px-3.5 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ink/25",
+                    "inline-flex min-h-11 items-center justify-center rounded-full px-3.5 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ink/25",
                     isActive
-                      ? "bg-primary text-on-primary"
-                      : "text-ink hover:bg-canvas-soft"
+                      ? "border border-ink bg-transparent text-ink"
+                      : "border border-transparent text-ink hover:bg-canvas-soft"
                   )}
                 >
                   {item.label}
@@ -60,6 +60,15 @@ function AppHeaderContent() {
             <div className="ml-1 flex min-h-11 min-w-11 items-center justify-center">
               <UserButton />
             </div>
+          </Show>
+
+          <Show when="signed-out">
+            <Link
+              href="/sign-in"
+              className="ml-1 inline-flex min-h-11 items-center justify-center rounded-xl bg-primary px-3.5 py-2 text-sm font-semibold text-on-primary transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ink/25"
+            >
+              Sign in
+            </Link>
           </Show>
         </div>
       </div>

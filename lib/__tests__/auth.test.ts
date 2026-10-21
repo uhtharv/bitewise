@@ -68,10 +68,22 @@ describe("03 — Clerk Google Authentication, Route Protection & /sign-in", () =
       homeReq
     );
 
+    expect(mockRedirectToSignIn).not.toHaveBeenCalled();
+    expect(homeRes?.status).toBe(200);
+
+    mockRedirectToSignIn.mockClear();
+    const todayReq = new NextRequest("https://example.com/today");
+    const todayRes = await handleMiddlewareAuth(
+      unauthMiddlewareAuth as unknown as Parameters<
+        typeof handleMiddlewareAuth
+      >[0],
+      todayReq
+    );
+
     expect(mockRedirectToSignIn).toHaveBeenCalledWith({
-      returnBackUrl: "https://example.com/",
+      returnBackUrl: "https://example.com/today",
     });
-    expect(homeRes?.status).toBe(307);
+    expect(todayRes?.status).toBe(307);
 
     mockRedirectToSignIn.mockClear();
     const signInReq = new NextRequest("https://example.com/sign-in");

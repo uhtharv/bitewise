@@ -4,12 +4,15 @@ import {
 } from "@clerk/nextjs/server";
 import { NextResponse, type NextRequest } from "next/server";
 
-function isPublicSignInPath(pathname: string): boolean {
-  return pathname === "/sign-in" || pathname.startsWith("/sign-in/");
-}
-
-function isApiPath(pathname: string): boolean {
-  return pathname === "/api" || pathname.startsWith("/api/");
+export function isPublicRoute(pathname: string): boolean {
+  return (
+    pathname === "/" ||
+    pathname === "/sign-in" ||
+    pathname.startsWith("/sign-in/") ||
+    pathname === "/api" ||
+    pathname.startsWith("/api/") ||
+    isClerkProxyPath(pathname)
+  );
 }
 
 export function isClerkProxyPath(pathname: string): boolean {
@@ -29,11 +32,7 @@ export async function handleMiddlewareAuth(
 ) {
   const { pathname } = request.nextUrl;
 
-  if (
-    isPublicSignInPath(pathname) ||
-    isApiPath(pathname) ||
-    isClerkProxyPath(pathname)
-  ) {
+  if (isPublicRoute(pathname)) {
     return NextResponse.next();
   }
 

@@ -187,5 +187,34 @@ describe("lib/api/client", () => {
       })
     );
   });
+
+  it("handles GUEST_LIMIT_REACHED code on 429 response", async () => {
+    const mockFetch: typeof fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "GUEST_LIMIT_REACHED",
+            message: "You've used all 3 free guest analyses for today. Sign in with Google to continue.",
+          },
+        }),
+        { status: 429, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    let caught: unknown;
+    try {
+      await analyzeMeal("1 apple", { fetchImpl: mockFetch });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ApiClientError);
+    const apiErr = caught as ApiClientError;
+    expect(apiErr.status).toBe(429);
+    expect(apiErr.code).toBe("GUEST_LIMIT_REACHED");
+    expect(apiErr.userMessage).toBe(
+      "You've used all 3 free guest analyses for today. Sign in with Google to continue."
+    );
+  });
 });
 

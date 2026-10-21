@@ -72,7 +72,7 @@ export interface CustomAuthCardViewProps {
   onContinueWithGoogle?: () => void;
 }
 
-function GoogleMarkIcon() {
+export function GoogleMarkIcon() {
   return (
     <svg
       aria-hidden="true"

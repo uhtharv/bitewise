@@ -1,24 +1,39 @@
-import { NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const VALID_ENV = vi.hoisted(() => {
+  const env = {
+    GEMINI_API_KEY: "test-gemini-key",
+    GEMINI_MODEL: "gemini-3.5-flash",
+    USDA_API_KEY: "test-usda-key",
+    SUPABASE_SERVICE_ROLE_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.service_role",
+    NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.anon",
+    FOOD_DATABASE_URL: "https://food-ref.supabase.co",
+    FOOD_DATABASE_ANON_KEY: "food-ref-anon-key",
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_123",
+    CLERK_SECRET_KEY: "sk_test_123",
+    NEXT_PUBLIC_CLERK_SIGN_IN_URL: "/sign-in",
+  };
+  Object.assign(process.env, env);
+  return env;
+});
+
+import { NextResponse } from "next/server";
+import { createServiceSupabaseClient } from "@/lib/supabase/service";
 import type { AiUsageRow, FoodRow } from "@/lib/supabase/user";
 
 const mockRequireAuth = vi.fn();
 
 vi.mock("@/lib/auth", () => ({
   requireAuth: () => mockRequireAuth(),
+  getAuthUserId: async () => {
+    const res = await mockRequireAuth();
+    if (res && typeof res === "object" && "status" in res) {
+      return null;
+    }
+    return res ?? null;
+  },
 }));
-
-const VALID_ENV = {
-  GEMINI_API_KEY: "test-gemini-key",
-  GEMINI_MODEL: "gemini-3.5-flash",
-  USDA_API_KEY: "test-usda-key",
-  SUPABASE_SERVICE_ROLE_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.service_role",
-  NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.anon",
-  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_123",
-  CLERK_SECRET_KEY: "sk_test_123",
-  NEXT_PUBLIC_CLERK_SIGN_IN_URL: "/sign-in",
-};
 
 function createMockAnalyzeSupabase(options?: {
   initialUsage?: AiUsageRow[];
@@ -275,14 +290,33 @@ describe("05 — POST /api/analyze & Daily Rate Limiter", () => {
     expect(tooLongRes.status).toBe(400);
   });
 
-  it("returns 401 when unauthenticated", async () => {
+  it("allows guest analysis and sets guest cookie when unauthenticated", async () => {
     mockRequireAuth.mockResolvedValueOnce(
       NextResponse.json(
         { error: { code: "UNAUTHORIZED", message: "Authentication required" } },
         { status: 401 }
       )
     );
-    const { POST } = await import("@/app/api/analyze/route");
+    const { handleAnalyzePost } = await import("@/app/api/analyze/route");
+    const dbHarness = createMockAnalyzeSupabase();
+    const supabase = createServiceSupabaseClient({
+      fetch: dbHarness.mockFetch,
+    });
+    const mockAiProvider = {
+      parseMealText: vi.fn().mockResolvedValueOnce([
+        {
+          normalized_name: "egg, whole, raw",
+          display_name: "Egg",
+          quantity_g: 100,
+        },
+      ]),
+      estimateMacrosPer100g: vi.fn().mockResolvedValue({
+        calories_per_100g: 143,
+        protein_per_100g: 12.6,
+        carbs_per_100g: 0.7,
+        fat_per_100g: 9.5,
+      }),
+    };
 
     const req = new Request("https://example.com/api/analyze", {
       method: "POST",
@@ -290,8 +324,15 @@ describe("05 — POST /api/analyze & Daily Rate Limiter", () => {
       body: JSON.stringify({ text: "2 eggs" }),
     });
 
-    const res = await POST(req);
-    expect(res.status).toBe(401);
+    const res = await handleAnalyzePost(req, {
+      supabase,
+      foodDbClient: supabase,
+      aiProvider: mockAiProvider,
+      now: () => new Date("2026-10-10T12:00:00Z"),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Set-Cookie")).toContain("bw_guest_id=");
   });
 
   it("returns 422 when meal text cannot be parsed into any food items", async () => {

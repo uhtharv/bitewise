@@ -23,3 +23,14 @@ export async function requireAuth(): Promise<string | NextResponse> {
   return userId;
 }
 
+/**
+ * Resolves the authenticated `userId` string, or `null` if unauthenticated/guest.
+ */
+export async function getAuthUserId(): Promise<string | null> {
+  const result = await requireAuth();
+  if (result instanceof NextResponse) {
+    return null;
+  }
+  return result;
+}
+

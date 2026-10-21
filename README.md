@@ -16,7 +16,7 @@ Bitewise is a fast, minimal calorie and macro tracker web app. Type what you ate
 - **Interactive Pre-Save Review:** Tweak gram quantities (`quantity_g`) with instant client-side macro rescaling, remove individual items, and choose the meal category (`breakfast`, `lunch`, `dinner`, `snack`) before logging.
 - **Daily Tracker (`/today`):** Track daily calorie, protein, carb, and fat totals against your personal goals with meal-grouped entries, lossless per-100g quantity editing, and one-tap deletion.
 - **Goals & Timezone (`/settings`):** Set custom daily calorie and macro targets (or leave them unset) and configure your local IANA timezone.
-- **Strict Data Isolation & Free-Tier Guardrails:** Powered by Clerk Google OAuth and Supabase Row Level Security (RLS) so each user can only access their own logs and settings, plus a built-in daily AI analysis cap (`30` analyses/user/day).
+- **Public Guest Access & Free-Tier Guardrails:** Try out meal analysis immediately without signing in (up to 3 free guest analyses/day with dual-layer cookie and IP rate limiting). Signing in with Google unlocks 30 analyses/day, goal setting, and daily meal logging, with seamless draft restoration across authentication. Data isolation is strictly enforced via Clerk and Supabase Row Level Security (RLS).
 
 ---
 

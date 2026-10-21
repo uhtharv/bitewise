@@ -35,7 +35,7 @@ Maintain `.env.example` with variable names only (never commit secrets):
 
 ## 3. Auth & Supabase Client Split **[LOCKED]**
 
-1. **Clerk Authentication:** Every `/api/*` route handler verifies the caller with Clerk's `auth()`. If `userId` is missing, return `401 Unauthorized` immediately.
+1. **Clerk Authentication:** Route handlers for user-owned data (`/api/entries`, `/api/summary`, `/api/settings`) verify the caller with Clerk's `auth()`. If `userId` is missing, return `401 Unauthorized` immediately. `/api/analyze` permits both authenticated users and unauthenticated guests (tracked via dual-layer guest cookie and hashed IP in `ai_usage`).
 2. **User-Scoped Supabase Client (`lib/supabase/user.ts`):**
    - Uses `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` with Clerk's session token passed via `accessToken` so Postgres RLS policies evaluate `(auth.jwt() ->> 'sub')`.
    - Used for all user-owned data in Database B: `meal_entries` and `user_settings`.
@@ -44,7 +44,7 @@ Maintain `.env.example` with variable names only (never commit secrets):
    - Used **exclusively** for read-only trigram and full-text searches against Database A (`reference_foods`).
 4. **Service-Role Supabase Client (`lib/supabase/service.ts`):**
    - Uses `SUPABASE_SERVICE_ROLE_KEY` (server-only).
-   - Used **exclusively** for incrementing and checking daily rate limits in `ai_usage`.
+   - Used **exclusively** for incrementing and checking daily rate limits in `ai_usage` for authenticated users and guests.
 
 ## 4. Database Schema **[LOCKED]**
 
@@ -129,7 +129,7 @@ Index: `CREATE INDEX idx_meal_entries_user_date ON meal_entries (user_id, logged
 ### 4.4 Database B: `ai_usage` (Daily Rate Limit Counter)
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| `user_id` | `text` | `NOT NULL` | Clerk user ID |
+| `user_id` | `text` | `NOT NULL` | Clerk user ID (`user_...`), guest cookie (`guest:<uuid>`), or hashed guest IP (`ip:<sha256>`) |
 | `usage_date` | `date` | `NOT NULL` | UTC date (`YYYY-MM-DD`) |
 | `count` | `integer` | `NOT NULL DEFAULT 0 CHECK (count >= 0)` | Number of `/api/analyze` calls made today |
 | **PK** | | `PRIMARY KEY (user_id, usage_date)` | Composite primary key |
@@ -155,14 +155,17 @@ All endpoints validate inputs with `zod` and return JSON.
 | Status | Code | When |
 |---|---|---|
 | `400` | `BAD_REQUEST` | Zod validation failed (invalid body, query param, or ID) |
-| `401` | `UNAUTHORIZED` | Missing or invalid Clerk session |
+| `401` | `UNAUTHORIZED` | Missing or invalid Clerk session on protected route |
 | `404` | `NOT_FOUND` | Entry not found (or belongs to another user under RLS) |
 | `422` | `UNPROCESSABLE_ENTITY` | Gemini could not parse the input text into food items |
-| `429` | `RATE_LIMITED` | User reached the daily limit of 30 `/api/analyze` requests |
+| `429` | `RATE_LIMITED` | Daily limit reached (30/day for signed-in users, 3/day per guest cookie, or 5/day per guest IP) |
 | `502` | `UPSTREAM_ERROR` | Gemini, USDA, or Supabase upstream request failed |
 
 ### 6.1 `POST /api/analyze`
-Parses free-text meal description, resolves nutrition via the Hybrid LLM-to-Database Pipeline (Database A pg_trgm + FTS reference search -> predictive ingredient deconstruction -> emergency fallback), and returns analyzed items (including optional `dry`/`raw` vs. `cooked` variants when preparation state was unspecified) without saving any meal entry (`FR-2`, `FR-7`).
+Parses free-text meal description, resolves nutrition via the Hybrid LLM-to-Database Pipeline (Database A pg_trgm + FTS reference search -> predictive ingredient deconstruction -> emergency fallback), and returns analyzed items without saving any meal entry (`FR-2`, `FR-7`).
+- **Authentication & Rate Limits:**
+  - Authenticated user: verified via Clerk `auth()`, limit is 30 analyses/day tracked in `ai_usage` (`user_id = <clerk_user_id>`).
+  - Guest user: unauthenticated callers are identified by `bw_guest_id` HTTP-only cookie (`guest:<uuid>`, limit 3/day) and hashed client IP (`ip:<sha256>`, limit 5/day). If neither cookie nor IP has exceeded limits, request proceeds and `bw_guest_id` cookie is set if missing. When either limit is hit, returns `429 RATE_LIMITED` with message "You've used all 3 free guest analyses for today. Sign in with Google to continue." and code `GUEST_LIMIT_REACHED`.
 
 Supports both JSON and Server-Sent Events (SSE) streaming for sub-500ms perceived latency:
 - If client sends `Accept: text/event-stream`, the endpoint streams cards progressively as they resolve:

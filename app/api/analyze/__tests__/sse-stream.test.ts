@@ -19,6 +19,7 @@ const VALID_ENV = {
 const mockRequireAuth = vi.fn();
 vi.mock("@/lib/auth", () => ({
   requireAuth: () => mockRequireAuth(),
+  getAuthUserId: () => mockRequireAuth(),
 }));
 
 function createMockSupabase() {

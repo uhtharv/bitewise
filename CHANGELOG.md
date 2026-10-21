@@ -5,6 +5,17 @@ All notable changes to **Bitewise** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (`MAJOR.MINOR.PATCH`).
 
+## [2.0.0](https://github.com/uhtharv/bitewise/compare/v1.1.0...v2.0.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pipeline:** Segregate static food catalog (Database A) from user logs (Database B). Drop foreign key constraint on meal_entries(food_id) and legacy foods table in Database B; meal_entries now stores per-100g macro snapshots directly for zero cross-database queries. POST /api/analyze supports card-by-card SSE streaming and Tier 1-3 hybrid lookup.
+
+### Added
+
+* **pipeline:** implement hybrid food catalog segregation, offline snapshots, and SSE streaming ([#3](https://github.com/uhtharv/bitewise/issues/3)) ([130ed98](https://github.com/uhtharv/bitewise/commit/130ed986c75a60ed58aba31a3f7e825ad2c916f7))
+
 ## [1.1.0](https://github.com/uhtharv/bitewise/compare/v1.0.1...v1.1.0) (2026-10-12)
 
 
